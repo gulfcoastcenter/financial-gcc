@@ -1,0 +1,4482 @@
+'Financial Assessment Main Program
+'''''''''''''''''''''''''''''''''''''''''''''''''
+' #TODO#
+'  - lots of code cleanup
+'  - look at removing the left 'bar' and replace with a dropdown
+'  - make use of 'gosub' with a control loop at the top.
+'  - remove the 47,000 'continue_xx' vars
+'  - make script more flexible - possibly moving things to libraries
+'    so data can be updated from other areas without writing new code
+'  - replace rec_counter with 'i' or a similar temp var
+'  - fix loops so they don't do a <= comparison and the incrementing occurs at the top
+'  - make label names more descriptive.  Maybe:
+'     frm_Xxx for forms
+'     read_Foo / write_Foo
+'     _validate_Foo
+
+'''''''''''''''''''''''''''''''''''''
+'AUTHOR: Bobby Dorris
+'DATE: 01/20/2005
+' modified by Carlos Caldera 02/09/2009
+'   added city and county description to display and correct
+' modified by Carlos Caldera 06/29/2009
+'   1. changed parent/guardian entry screen - it was not saving name, relationship
+'  telephone info for parent/guardian when entering same fields in 2 different
+'  $block designations. (see UPDATEFORM2e)
+'  2. changed to sort by uid instead of effdate on read of entered data -
+'  (see READGUARD)
+'  3. added some $dbunlock functions (for some reason i got a locked error
+'  during testing)
+' modified by Carlos Caldera 07/15/2009
+' added new form (2f) to enter/update correspondent informationpwd
+'
+'RLE 20091230 1.0.5 Add section for Military Service History
+'             This reads the VA data and calls script MILSERV
+'RLE 20091231 1.0.6 remove all $endform() calls - not necessary
+'             ~ fix call to lib_finassmt:checked()
+'               correspondent 'verified' checkbox was added by Carlos, but
+'               the function wasn't updated to support this.
+'               ** per Donna I removed the verification checkbox from the form
+'               ** and in the checked() function call
+'RLE 20100211 .007 Require fields in primary correspondent
+'             - remove work phone from PC
+'             + fix bad formatting
+'             + add warning box for care batching
+'             + add mailto link to notify Dolly
+'             ~ tabs to spaces
+'RLE 20101122 .008 changed ADDREC5 to update the previous record
+'             to adjust the lapse date to avoid overlapping dates.
+'             - added read of all vars (addrec5) to avoid duplication during update
+'RLE 20101209 .009
+'  - format [effd] to [EFFD]
+'  - Adjust logic in CHECKNEW to use the 'i' counter var and fix bad looping          
+'  - fix 'adddress' spelling  
+'  - default $regid for client_id when prompting
+'RLE 20110121 .010
+'  - shorten library var names
+'  - change library calls from {lib}func() to lib:func()
+'RLE 20110825 .011
+'  - reverted changes from 1/21/2011
+'  - change check of RC in UPDATEREC2b to > 2 to avoid errors (not all dst's will have data)
+'TJM 20120126 .012
+'  + UPDATEFORM2d subroutine for adding / updating mailing address now populates c.ml.city.desc/c_ml_city_desc[]
+'     when using the same address as the physical address. lib_RINELIG uses c.ml.city.desc to populate the
+'     c.eg.inscy/c_eg_inscy[] eligibility record city variables when the city value = "OTHER" and the staff
+'     is not in the billing group. Staff in the billing group still have the ability to update c.eg.inscy directly.
+'TJM 20120222 .013
+'  + Added DST refrences to c.corr.addr2 for additional address line space.
+'RLE 20120711 .014
+'  - added threshold (CN_FinThresh) to determine when a new financial/PP layer gets created
+'  - 7/12 added user notification
+'  - added goback to skip additional data validation if a new layer will be created
+'*******************************************************************************
+
+%define CN_FinThresh 90
+%define CN_ExpThresh 365
+
+%maptest
+'%include c_incmaps
+%allow_nonmapped_io
+
+%version 01.0.014 07/12/12 GCC
+%desc Updates the client financial information
+
+start FINASSMT(client_id)
+
+%include gcc_groups
+'$trace("path","/c0/trace/finassmt") $trace("on")
+'$trace("path","tracefinassmt") $trace("watch", c_ad_uid[]) $trace("on")
+
+hr is alpha hr = "<hr> </hr>"
+'**********************VARIABLE DELCARATIONS************************************
+client_id      is alpha
+
+allow_days     is binary   allow_days = 3
+'DSTs not within a record
+c.ln        is alpha
+c.fn        is alpha
+c.mn        is alpha
+
+c_ln        is alpha p_ln        is alpha 'last name
+c_fn        is alpha p_fn        is alpha 'first name
+c_mn        is alpha p_mn        is alpha 'middle name
+c.suffix    is alpha c_suffix    is alpha 'suffix
+                     p_suffix    is alpha 'suffix
+
+c.ssn       is alpha c_ssn       is alpha 'social security
+c.sex       is alpha c_sex       is alpha 'sex
+c.race         is alpha c_race         is alpha 'ethnic code
+c.bd        is date     c_bd        is date     'birth date
+
+c.mar       is alpha c_mar       is alpha 'marital status
+c.empl         is alpha c_empl         is alpha 'employment status
+c.maiden    is alpha c_maiden    is alpha 'maiden name
+c.intake    is alpha c_intake    is alpha 'print intake form?
+c.age.y        is binary   c_age_y        is binary   'client age in years
+
+c.clt.nm.notes is dbtext-l
+c_clt_nm_notes    is dbtext-l 'client name notes
+
+'eligibility record 1
+c.el        is header   c_el_effd[]    is date  'client eligibility rec
+c.el.fs        is binary   c_el_fs[]      is binary   'funding source number
+
+'address record 13
+c.ad.rec    is header   c_ad_uid[]     is numeric  'case address record
+c_ad_effd[]    is date                 'effective date of case address rec
+c.addr1        is alpha c_addr1[]      is alpha 'address (1)
+c.addr2        is alpha c_addr2[]      is alpha 'address (2)
+c.city         is alpha c_city[]    is alpha 'city
+c.state        is alpha c_state[]      is alpha 'state
+c.zip       is alpha c_zip[]        is alpha 'zip code
+c.tel       is alpha c_tel[]        is alpha 'telephone number
+c.county    is alpha c_county[]     is alpha 'county of residence
+c.areacode     is alpha c_areacode[]   is alpha 'area code
+c.acodeoth     is alpha c_acodeoth[]   is alpha 'area code-client other
+c.telother     is alpha c_telother[]   is alpha 'telephone-client other
+c.acodewk      is alpha c_acodewk[]    is alpha 'area code-client work
+c.telwork      is alpha c_telwork[]    is alpha 'telephone-client work
+c.city.desc    is alpha c_city_desc[]  is alpha 'city description -
+c.county.desc  is alpha c_county_desc[]   is alpha 'county description-
+c.ad.staff     is alpha c_ad_staff[]   is alpha 'staff entering address
+
+'responsible party record 146
+c.rp        is header   c_rp_uid[]     is numeric  'responsible party
+c.rp.ln        is alpha c_rp_ln[]      is alpha 'respon.party last name
+c.rp.fn        is alpha c_rp_fn[]      is alpha 'first name
+c.rp.mn        is alpha c_rp_mn[]      is alpha 'middle name
+c.rp.rel    is alpha c_rp_rel[]     is alpha 'relationship to client
+c.rp.addr1     is alpha c_rp_addr1[]   is alpha 'address line 1
+c.rp.addr2     is alpha c_rp_addr2[]   is alpha 'address line 2
+c.rp.city      is alpha c_rp_city[]    is alpha 'city
+c.rp.st        is alpha c_rp_st[]      is alpha 'state abbreviation
+c.rp.zip    is alpha c_rp_zip[]     is alpha 'zip
+c.rpetq        is alpha c_rpetq[]      is alpha 'respon. party entity
+c.rp.staff     is alpha c_rp_staff[]   is alpha 'staff entering resp
+
+'client contact record 850
+c.cc.rec    is header   c_cc_uid[]     is numeric  'client contact record
+c_cc_effd[]    is date                 'effective date of contact record
+c.cc.prel      is alpha c_cc_prel[]    is alpha 'parent/guardian
+c.cc.name      is alpha c_cc_name[]    is alpha 'parent/guardian name
+c.cc.teleh     is alpha c_cc_teleh[]   is alpha 'parent/guardian home
+c.cc.telew     is alpha c_cc_telew[]   is alpha 'parent/guardian work
+c.cc.emnm      is alpha c_cc_emnm[]    is alpha 'emergency contact
+c.cc.emhph     is alpha c_cc_emhph[]   is alpha 'emergency contact
+c.cc.emwph     is alpha c_cc_emwph[]   is alpha 'emergency contact
+c.cc.emrel     is alpha c_cc_emrel[]   is alpha 'relationship of emer.
+c.mr.guard     is alpha c_cc_guard[]   is alpha 'guardianship?
+c.cc.staff     is alpha c_cc_staff[]   is alpha 'staff entering contact
+
+'mailing address record 2289
+c.ml.rec    is header   c_ml_uid[]     is numeric  'mailing add rec header
+c_ml_effd[]    is date                 'effective date of mailing add rec
+c.ml.addr1     is alpha c_ml_addr1[]   is alpha 'mailing address 1
+c.ml.addr2     is alpha c_ml_addr2[]   is alpha 'mailing address 2
+c.ml.city      is alpha c_ml_city[]    is alpha 'mailing address city
+c.ml.state     is alpha c_ml_state[]   is alpha 'mailing address state
+c.ml.zip    is alpha c_ml_zip[]     is alpha 'mailing address zip
+c.ml.city.desc is alpha c_ml_city_desc[] is alpha  'city description
+c.ml.staff     is alpha c_ml_staff[]   is alpha 'staff ent mailing addr
+
+'household record 3070
+c.hh.rec    is header   c_hh_uid[]     is numeric  'household record header
+c_hh_effd[]    is date                 'effective date of household record
+c.hh.name      is alpha c_hh_name[]    is alpha 'name
+c.hh.id        is numeric  c_hh_id[]      is numeric  'id
+c.hh.relship   is alpha c_hh_relship[] is alpha 'relationship
+c.hh.age    is alpha c_hh_age[]     is alpha 'age flag
+c.hh.current   is alpha c_hh_current[] is alpha 'current
+c.hh.staff     is alpha c_hh_staff[]   is alpha 'staff
+c.hh.client    is alpha c_hh_client[]  is alpha 'client
+c.hh.cid    is alpha c_hh_cid[]     is alpha 'client id
+
+'household income record 3080
+c.inc.rec      is header   c_inc_uid[]    is numeric  'income record header
+c_inc_effd[]   is date                 'effective date of income record
+c.inc.id    is numeric  c_inc_id[]     is numeric  'id
+c.inc.type     is alpha c_inc_type[]   is alpha 'type
+c.inc.amnt     is numeric  c_inc_amnt[]   is numeric  'amount
+c.inc.date     is date     c_inc_date[]   is date     'doc received date
+c.inc.staff    is alpha c_inc_staff[]  is alpha 'staff
+c.inc.current  is alpha c_inc_current[]   is alpha 'current
+
+'aka record 3054
+c.aka.rec      is header   c_aka_uid[]    is numeric  'aka record header
+c.aka.lname    is alpha c_aka_lname[]  is alpha 'aka last name
+c.aka.fname    is alpha c_aka_fname[]  is alpha 'aka first name
+c.aka.mname    is alpha c_aka_mname[]  is alpha 'aka middle name
+c.aka.suffix   is alpha c_aka_suffix[] is alpha 'aka suffix
+c.aka.staff    is alpha c_aka_staff[]  is alpha 'staff entering aka
+
+'private pay record 7911
+$$pp.rec    is header   pp_uid[]    is numeric  'private pay record
+pp.staff    is alpha pp_staff[]     is alpha 'fin assess staff
+pp.staffu      is alpha pp_staffu[]    is alpha 'update fin assess staff
+pp.uptdt    is date     pp_uptdt[]     is date
+pp.tmnginc     is numeric  pp_tmnginc[]   is numeric  'total mon gross income
+pp.tmnuinc     is numeric  pp_tmnuinc[]   is numeric  'total mon unearn income
+pp.tmi         is numeric  pp_tmi[]    is numeric  'total monthly incomev
+pp.tmnexin     is numeric  pp_tmnexin[]   is numeric  'total mon eoe
+pp.tadginc     is numeric  pp_tadginc[]   is numeric  'total adjust gross inc
+pp.ovrrsn      is alpha pp_ovrrsn[]    is alpha 'mmf override reason
+pp.100std      is alpha pp_100std[]    is alpha 'consumer pay 100%
+pp.100why      is alpha pp_100why[]    is alpha 'if 100%, due to:
+pp.100svcs     is alpha pp_100svcs[]   is alpha 'if 100%, affects:
+$$pp.d.lia     is numeric  $$pp_d_lia[]   is numeric  'pvt pay max dollars lia
+$$pp.eff    is date     $$pp_eff[]     is date     'private pay eff date
+$$pp.lap    is date     $$pp_lap[]     is date     'private pay lap date
+pp.mmftot      is binary   pp_mmftot[]    is binary   'total fam/hh mbrs mmf
+pp.comment     is dbtext-l
+pp.chipref     is alpha refer_chip     is alpha 'referral for chip
+pp.ssdimdf     is alpha refer_ssi      is alpha 'referral for ssi
+
+'client housing record 26325
+c.hou.rec      is header   c_hou_effd     is date     'client housing effd
+c.hou.livarr   is alpha c_hou_livarr   is alpha 'client housing living
+c.hou.livarro  is alpha c_hou_livarro  is alpha 'client housing living
+c.hou.where    is alpha c_hou_where    is alpha 'client housing where
+c.hou.whereo   is alpha c_hou_whereo   is alpha 'client housing where
+c.hou.sec8     is alpha c_hou_sec8     is alpha 'client housing sec8
+c.hou.sec8w    is alpha c_hou_sec8w    is alpha 'client housing sec8
+c.hou.edate    is date     c_hou_edate    is date  'client housing edate
+c.hou.staff    is alpha c_hou_staff    is alpha 'client housing staff
+
+'extraordinary expenses record 26340
+c.exe.rec      is header   c_exe_uid[]    is numeric  'extra exp record
+                     c_exe_effd[]   is date     'extra exp effd
+c.exe.type     is alpha c_exe_type[]   is alpha 'extra exp type
+c.exe.sdate    is date     c_exe_sdate[]  is date     'extra exp sdate
+c.exe.edate    is date     c_exe_edate[]  is date     'extra exp edate
+c.exe.amount   is numeric  c_exe_amount[] is numeric  'extra exp amount
+c.exe.docdt    is date     c_exe_docdt[]  is date     'extra exp date
+c.exe.other    is alpha c_exe_other[]  is alpha 'extra exp other
+c.exe.current  is alpha c_exe_current[]   is alpha 'extra exp current
+c.exe.staff    is alpha c_exe_staff[]  is alpha 'extra exp staff
+
+'correspondent record 15060
+c.corr.rec     is header   c_corr_uid[]      is numeric  'extra exp record
+                     c_corr_effd[]  is date     'extra exp effd
+c.corr.fn      is alpha c_corr_fn[]    is alpha
+c.corr.ln      is alpha c_corr_ln[]    is alpha
+c.corr.rel     is alpha c_corr_rel[]   is alpha
+c.corr.addr1   is alpha c_corr_addr1[] is alpha
+c.corr.addr2   is alpha c_corr_addr2[] is alpha
+c.corr.city    is alpha c_corr_city[]  is alpha
+c.corr.state   is alpha c_corr_state[] is alpha
+c.corr.zip     is alpha c_corr_zip[]   is alpha
+c.corr.phone   is alpha c_corr_phone[] is alpha
+c.corr.wph     is alpha c_corr_wph[]   is alpha
+c.corr.cityd   is alpha c_corr_cityd[] is alpha
+
+'military record
+c.mil.header   is r
+c.mil.lname    is x
+mil_rec[]      is n
+mil_effd[]     is d
+mil_lname[]    is x
+
+'other
+c.presprob     is x
+c.dxrec        is r
+c.dxaxis       is x
+
+
+
+'VARIABLES
+rc          is binary
+T           is x
+title       is alpha
+l_fin   is binary   'library for financial functiond
+l_finelig    is binary   'library for financial functiond
+string         is alpha 'used to capture & format data
+web_dir        is alpha 'Directory of web pages
+web_dir = "http://gcnet:87/cmhc/helpfiles/FinancialAssessment/"
+web_str        is alpha 'String variable for web page locations
+validation     is alpha 'Validation flag, Y = OK, N = Problem
+validzipflag   is alpha 'Validation flag for zip code, Y=ok, else reason
+validpnumber   is alpha 'Validation flag for phone number, Y=ok, else reason
+err_msg        is alpha 'Used in validation, return with error message
+city_code[]    is alpha 'array listing cities codes for drop box
+city_desc[]    is alpha 'array listing cities describtion for drop box
+city_status[]  is alpha 'array listing cities active status for drop box
+county_code    is alpha 'Variable to hold alt 3 of City DCT
+current_age    is numeric  'calculate current age of client
+menu_array[]   is alpha 'process menu
+name_string    is alpha 'name to display in process menu
+name_str    is alpha
+suffix_str     is alpha
+menu_title     is alpha
+
+dct_22[]    is alpha 'arrary listing for DCT 22 drop box
+dct_29_code[]  is alpha 'arrary listing for DCT 29 drop box
+dct_29_desc[]  is alpha 'arrary listing for DCT 29 drop box
+dct_29_status[]   is alpha 'arrary listing for DCT 29 drop box
+dct_32[]    is alpha 'arrary listing for DCT 32 drop box
+dct_36[]    is alpha 'arrary listing for DCT 36 drop box
+dct_106[]      is alpha 'arrary listing for DCT 106 drop box
+dct_262[]      is alpha 'arrary listing for DCT 262 drop box
+dct_89_code[]  is alpha 'arrary listing for DCT 89 drop box
+dct_89_desc[]  is alpha 'arrary listing for DCT 89 drop box
+dct_89_status[]   is alpha 'arrary listing for DCT 89 drop box
+dct_90_code[]  is alpha 'arrary listing for DCT 90 drop box
+dct_90_desc[]  is alpha 'arrary listing for DCT 90 drop box
+dct_90_status[]   is alpha 'arrary listing for DCT 90 drop box
+
+fs_no[]        is binary
+fs_num[]    is alpha
+fs_type[]      is alpha
+fs_desc[]      is alpha
+con_id[]    is alpha
+con_nm[]    is alpha
+con_fs[]    is binary
+con_eff[]      is date
+con_lap[]      is date
+
+
+'Button and link Variables
+view_only      is alpha 'view only button
+save_btn    is alpha
+nav_btn        is alpha
+back_btn    is alpha
+b_mil    is x
+addf2a_btn     is alpha 'add name section
+addf2b_btn     is alpha 'add other section
+addf2c_btn     is alpha 'add physical address section
+addf2d_btn     is alpha 'add mailing address section
+addf2e_btn     is alpha 'add mailing address section
+addf2f_btn     is alpha 'add correspondent section
+addf3a_btn     is alpha 'add mailing address section
+addf4a_btn     is alpha 'add mailing address section
+addf4b_btn     is alpha 'add mailing address section
+correctf2c_btn is alpha 'correct physical address section
+correctf2d_btn is alpha 'correct mailing address section
+correctf2e_btn is alpha 'correct mailing address section
+correctf2f_btn is alpha 'correct correspondent section
+correctf3a_btn is alpha 'correct mailing address section
+prevaddr_btn   is alpha 'display previous address
+prevmladdr_btn is alpha 'display previous mailing address
+el_upt_btn[]   is alpha 'eligibility update button
+el_del_btn[]   is alpha 'eligibility delete button
+el_fv_btn[]    is alpha 'eligibility verification button
+hh_upt_btn[]   is alpha 'household update button
+
+edit_aka[]     is alpha 'link to edit an aka record
+del_aka[]      is alpha 'link to delete an aka record
+add_aka        is alpha
+edit_fver[]    is alpha 'link to edit an fin verify record
+del_fver[]     is alpha 'link to delete an fin verify record
+add_fver    is alpha 'link to add an fin verify record
+edit_hh[]      is alpha 'link to edit a household record
+del_hh[]    is alpha 'link to delete household record
+add_inc[]      is alpha 'link to edit an income record
+edit_inc[]     is alpha 'link to edit an income record
+del_inc[]      is alpha 'link to delete an income record
+edit_hou    is alpha 'link to edit an houing record
+edit_exe[]     is alpha 'link to edit an exe record
+del_exe[]      is alpha 'link to delete an exe record
+add_exe        is alpha
+
+'Counters & control Variables
+continue    is alpha
+continue2      is alpha
+continue3      is alpha
+continue3b     is alpha
+continue3c     is alpha
+continue3f     is alpha
+continue4      is alpha
+continue4b     is alpha
+continue4c     is alpha
+continue4c_1   is alpha
+continue4d     is alpha
+continue4d_1   is alpha
+display2    is alpha
+retry       is binary
+counter_4      is binary
+counter_4a     is binary
+counter_4b     is binary
+counter_4c     is binary
+counter_4d     is binary
+rec_counter    is binary
+el_counter     is binary
+fver_counter   is binary
+city_counter   is binary   'used in editing city description
+sub_counter    is binary   'used in editing city description
+cnt            is binary   'reuseable array counter
+cnt1        is binary   'reuseable array counter
+a_counter      is binary   'reuseable array counter
+b_counter      is binary   'reuseable array counter
+financial_staff   is alpha 'user running program is member of financial group
+checkedname    is alpha 'Name verified check box
+checkeddemo    is alpha 'Demographics verified check box
+checkedphaddr  is alpha 'physical address verified check box
+checkedmladdr  is alpha 'mailing address verified check box
+checkedguard   is alpha 'guardian/parent information verified check box
+checkedel      is alpha 'guardian/parent information verified check box
+checkedrp      is alpha 'responsible party information verified check box
+checkedhh      is alpha 'guardian/parent information verified check box
+checkedinc     is alpha 'guardian/parent information verified check box
+checkedee      is alpha 'guardian/parent information verified check box
+checkedhouse   is alpha 'guardian/parent information verified check box
+copyaddr    is alpha 'copy physical address to mailing address
+legalguard     is alpha
+updatetype     is alpha 'add or correct flag; a - add, c - correct, v - view
+editmode    is numeric  '1 - view only, 2 - update, 3 - correct
+akafound    is alpha 'should new aka be added
+correct_form3  is alpha
+fs_uid         is alpha
+calculated_mmf is numeric
+income_unearned   is numeric
+income_earned  is numeric
+income_total   is numeric
+income_adjusted   is numeric
+expenses_extra is numeric
+family_size    is numeric
+mmf_comment    is dbtext-l
+rtrncode    is numeric
+datediff    is binary
+dowhat         is alpha
+createnew      is alpha
+nextrow        is binary
+rowcolor    is alpha
+i              is i
+
+override_mmf   is alpha
+override_reason   is alpha 'pp.ovrrsn dct 153
+override_stdfee   is alpha 'pp.100std dct 29
+override_stdwhy   is alpha 'pp.100why dct 92
+override_stdsvc   is alpha 'pp.100svcs dct 93
+
+'*****************************SET FONT STYLES***********************************
+$setstyle(".blueb", "font-family:times new roman", "font-size:10pt",
+        "color:blue", "font-weight:bold")
+$setstyle(".blue", "font-family:times new roman", "font-size:10pt",
+        "color:blue")
+$setstyle(".blackb", "font-family:times new roman", "font-size:10pt",
+        "color:black", "font-weight:bold")
+$setstyle(".black", "font-family:times new roman", "font-size:10pt",
+        "color:black")
+$setstyle(".green", "font-family:times new roman", "color:green",
+        "font-weight:bold")
+rowcolor = "bgcolor='DAFAFA'"
+
+'****************************PROCEDURE SECTION**********************************
+$looplimit = 0
+'Initialize librarys
+rc = $loadlib(l_fin, "lib_FINASSMT")
+rc = $loadlib(l_finelig, "lib_FINELIG")
+
+'Get fund source list
+l_fin:getfundsource(fs_desc[], fs_no[], fs_num[], fs_type[])
+l_fin:get_contracts(con_id[], con_nm[], con_fs[], con_eff[], con_lap[])
+'$trace("path","tracefinassmt") $trace("watch", c_ad_uid[]) $trace("on")
+if it_staff = "Y" then
+   editmode = 4
+elseif billing_staff = "Y" then
+   editmode = 3
+elseif benefit_advisor = "Y" then
+   editmode = 2
+else
+   editmode = 1
+endif
+
+rc = $dctloada(29, dct_29_code[], dct_29_desc[], dct_29_status[])
+rc = $dctloada(47, city_code[], city_desc[], city_status[])
+rc = $dctloada(89, dct_89_code[], dct_89_desc[], dct_89_status[])
+rc = $dctloada(90, dct_90_code[], dct_90_desc[], dct_90_status[])
+
+if client_id !dp then
+   gosub GETID
+else
+   gosub GETNAME
+endif
+
+MENU:
+cnt = 1
+menu_array[cnt++] = "1|Main Menu"
+menu_array[cnt++] = "2|CLIENT"
+menu_array[cnt++] = "3|Specify Client|GID"
+menu_array[cnt++] = "3|Display Last FA|DFA"
+menu_array[cnt++] = "2|Client Information"
+menu_array[cnt++] = "3|Name|2a"
+menu_array[cnt++] = "3|Demographics|2b"
+menu_array[cnt++] = "3|Physical Address|2c"
+menu_array[cnt++] = "3|Mailing Address|2d"
+menu_array[cnt++] = "3|Guardian/Contact|2e"
+menu_array[cnt++] = "3|Primary Correspondent|2f"
+menu_array[cnt++] = "3|Military History|2MIL"
+menu_array[cnt++] = "2|Eligibility"
+menu_array[cnt++] = "3|Fund Source|3"
+menu_array[cnt++] = "3|Responsible Party|3d"
+menu_array[cnt++] = "2|Income"
+menu_array[cnt++] = "3|Household Income|4"
+menu_array[cnt++] = "3|Extraordinary Expenses|4d"
+menu_array[cnt++] = "3|Housing|4c"
+if editmode > 1 then
+   menu_array[cnt++] = "2|Complete"
+   menu_array[cnt++] = "3|Calculate MMF|5"
+'  menu_array[cnt++] = "3|Add Event|5b"
+endif
+
+menu_title = "Financial Menu"
+select $brmenu(menu_array[], name_string)
+   case "GID"
+      gosub GETID
+   case "DFA"
+      call "FINRPT" (client_id, "D",rtrncode)
+   case "2a"
+      gosub FORM2a
+   case "2b"
+      gosub FORM2b
+   case "2c"
+      gosub FORM2c
+   case "2d"
+      gosub FORM2d
+   case "2e"
+      gosub FORM2e
+   case "2f"
+      gosub FORM2f
+   case "2MIL"
+      gosub FORM2MIL
+   case "3"
+      gosub FORM3
+   case "3d"
+      gosub FORM3d
+   case "4"
+      gosub FORM4
+   case "4d"
+      gosub FORM4d
+   case "4c"
+      gosub FORM4c
+   case "5"
+      gosub FORM5
+'  case "5b"
+'     call "CAMENTRY" ($today,"NNBED",client_id,rtrncode)
+endselect
+goto MENU
+return
+
+GETID:               'Main form - Get client ID
+   if client_id !dp then client_id = $regid endif
+   $clear(checkedname,checkeddemo, checkedphaddr, checkedmladdr,checkedguard,
+         checkedel, checkedrp, checkedhh, checkedinc, checkedee, checkedhouse)
+   $submitopt("on", "Next")
+   $cancelopt("on", "Quit")
+   $form("main")
+
+   $text("{CENTER}")
+   $text("{H1}Select Client{/H1}")
+   $text("Case Number: ")
+   $textbox(client_id, "DB``2", 8)
+   $editmsg(client_id)
+
+   $sendform("main")
+
+   if $endbutton = "SUBMIT" then
+      gosub GETNAME
+   elseif $endbutton = "CANCEL" then
+      return
+   endif
+goback
+
+GETNAME:
+   gosub READREC2
+   name_string = c.fn + " " + c.ln + " (" + client_id + ")"
+goback
+
+FORM2a:
+continue = "Y"
+do while continue = "Y"
+   $clear(addf2a_btn)
+   gosub READREC2
+
+   $submitopt("off", "Next")
+   $cancelopt("off", "Quit")
+   $form("form2a")
+
+   title = "Client Financial Information"
+   l_fin:display_header(title,,client_id)
+
+'================= start name section =========================================
+   $style("normal")
+   $bstyle("button", "button")
+   $text("Name Section:", "green") $br()
+   $table("f2name", ,"width='100%'")
+      $row()
+         $col("left",,"10%","2") $text("Last:", "datatag")
+         $col("left",,"20%") $text(c_ln)
+         $col("left",,"10%","2") $text("First:", "datatag")
+         $col("left",,"20%") $text(c_fn)
+         $col("left",,"10%","2") $text("Middle:", "datatag")
+         $col("left",,"20%") $text(c_mn)
+      $row(, rowcolor)
+         $col("left",,"10%","2") $text("Suffix:", "datatag")
+         string = $dct(44, c_suffix, "D")
+         $col("left",,"20%") $text(string)
+         $col("left",,"10%","2") $text("Maiden:", "datatag")
+         $col("left",,"20%") $text(c_maiden)
+   $endtable("f2name")
+   $br() $text("Name Notes:", "datatag") $text(c_clt_nm_notes) $br(2)
+
+   $text("Also Known As (AKA) Names:", "green") $br()
+   $table("f2aka", ,"width='100%'")
+      $row()
+         $col("left") $text("Last Name:", "datatag")
+         $col("left") $text("First Name:", "datatag")
+         $col("left") $text("Middle Name:", "datatag")
+         $col("left") $text("Suffix:", "datatag")
+      rec_counter = 1
+      do while rec_counter <= $maxarray(c_aka_lname[])
+         $row()
+            $col("left") $text(c_aka_lname[rec_counter])
+            $col("left") $text(c_aka_fname[rec_counter])
+            $col("left") $text(c_aka_mname[rec_counter])
+            string = $dct(44, c_aka_suffix[rec_counter], "D")
+            $col("left") $text(string)
+            rec_counter++
+      enddo
+   $endtable("f2aka")
+
+   rc = $sort(c_aka_lname[], c_aka_fname[], c_aka_mname[], c_aka_suffix[],
+            c_aka_uid[])
+
+'Allow appropriate staff to update name information
+   if editmode >= 2 then
+      $bstyle("button", "button")
+      $tag("<CENTER>") $submit(addf2a_btn, "Update")  $tag("</CENTER>")
+      $br(2) $style("error") $tag("<CENTER>")
+      $checkbox(checkedname, "Name Verified","Y") $tag("</CENTER>") $br()
+   endif
+
+'  $br() $tag(hr) $br()
+'  %include c_pbutton
+
+   $sendform("form2a")
+
+   if $endbutton = "SUBMIT" then
+      goto FORM2b
+   elseif $endbutton = "CANCEL" then
+      continue = "N"
+   elseif addf2a_btn = "Y" then
+      gosub UPDATEFORM2a
+   endif
+enddo
+goback
+
+FORM2b:
+continue = "Y"
+do while continue = "Y"
+   $clear(addf2b_btn, back_btn)
+   gosub READREC2
+
+   $submitopt("off", "Next")
+   $cancelopt("off", "Quit")
+   $form("form2b")
+   $navbutton(back_btn, "Back")
+
+   title = "Client Financial Information"
+   l_fin:display_header(title,,client_id)
+'================= start demographics section ==================================
+   $text("Demographics Section:", "green")
+   $br()
+   $table("f2a", ,"width='100%'")
+      $row()
+         $col("left",,"30%","2") $text("Social Security Number:", "datatag")
+         $col("left",,"20%") $text(c_ssn)
+         $col("left",,"30%","2") $text("Gender:", "datatag")
+         string = $dct(22, c_sex, "D")
+         $col("left", ,"20%") $text(string)
+      $row(, rowcolor)
+         $col("left",,"30%","2") $text("Date of Birth:", "datatag")
+         $col("left",,"20%") $text(c_bd)
+         $col("left",,"30%","2") $text("Age:", "datatag")
+         $col("left",,"20%") $text(c_age_y)
+      $row()
+         $col("left",,"30%","2") $text("Ethnicity:", "datatag")
+         string = $dct(23, c_race, "D")
+         $col("left", ,"20%") $text(string)
+         $col("left",,"30%","2") $text("Marital Status:", "datatag")
+         string = $dct(28, c_mar, "D")
+         $col("left", ,"20%") $text(string)
+      $row(, rowcolor)
+         $col("left",,"30%","2") $text("Employment Status:", "datatag")
+         string = $dct(10, c_empl, "D")
+         $col("left", ,"20%") $text(string)
+   $endtable("f2a")
+
+'Allow appropriate staff to update name information
+   if editmode >= 2 then
+      $bstyle("button", "button")
+      $tag("<CENTER>") $submit(addf2b_btn, "Update")  $tag("</CENTER>")
+      $br(2) $style("error") $tag("<CENTER>")
+      $checkbox(checkeddemo, "   Demographics Verified","Y")
+      $tag("</CENTER>") $br()
+   endif
+
+'section definition complete. Add print button
+'  %include c_pbutton
+
+   $sendform("form2b")
+
+   if $endbutton = "SUBMIT" then
+      goto FORM2c
+   elseif $endbutton = "CANCEL" then
+      continue = "N"
+   elseif back_btn = "Y" then
+      goto FORM2a
+   elseif addf2b_btn = "Y" then
+      gosub UPDATEFORM2b
+   endif
+enddo
+goback
+
+
+'++++++++++++++ Read data form form 2 subroutine +++++++++++++++++++++++++++++++
+READREC2:
+   rc = $dbread(2, client_id, c.ln, c.fn, c.mn, c.suffix, c.ssn, c.sex, c.race,
+             c.mar, c.empl, c.maiden, c.bd, c.age.y, c.clt.nm.notes)
+   if rc > 1 then
+         $brmsg("There was an error in reading client record.", 1, "C")
+         string = "script:" + $scriptid + " Line:" + $sourceline +
+                "rc:" + $format(rc, "ZZZ")
+         $brmsg(string, 2, "W", "ERROR")
+         return
+   endif
+
+   c_ln = c.ln
+   c_fn = c.fn
+   c_mn = c.mn
+   c_suffix = c.suffix
+   c_bd = c.bd
+   c_age_y = c.age.y
+   c_ssn = c.ssn
+   c_sex = c.sex
+   c_race = c.race
+   c_mar = c.mar
+   c_empl = c.empl
+   c_maiden = c.maiden
+   c_clt_nm_notes = c.clt.nm.notes
+
+   current_age = ($today - c.bd) / 365.25  ' compute age in years
+   gosub READAKA
+   gosub READADDR
+   gosub READMLADDR
+   gosub READGUARD
+   gosub READCORR
+$dbunlock()
+goback
+
+'++++++++++++++ Read AKA record subroutine ++++++++++++++++++++++++++++++++++++
+READAKA:
+   $clear(c_aka_uid[], c_aka_lname[], c_aka_fname[], c_aka_mname[],
+         c_aka_suffix[])
+
+   rc = $dbread(2, client_id, c.aka.rec, c.aka.lname, c.aka.fname,
+                        c.aka.mname, c.aka.suffix)
+
+   rec_counter = 1
+   do while rc < 2
+      c_aka_uid[rec_counter] = c.aka.rec[uid]
+      c_aka_lname[rec_counter] = c.aka.lname
+      c_aka_fname[rec_counter] = c.aka.fname
+      c_aka_mname[rec_counter] = c.aka.mname
+      c_aka_suffix[rec_counter] = c.aka.suffix
+       rec_counter++
+      rc = $dbreadnextdst(02, client_id, c.aka.rec, c.aka.lname, c.aka.fname,
+                        c.aka.mname, c.aka.suffix)
+   enddo
+
+   rc = $sort(c_aka_lname[], c_aka_fname[], c_aka_mname[], c_aka_suffix[],
+            c_aka_uid[])
+
+goback
+
+'++++++++++++++ Read physical address record into array subroutine ++++++++++++
+READADDR:
+'$trace("path","tracesrch1") $trace("watch", c_ad_uid[]) $trace("on")
+   $clear(c_ad_uid[],c_ad_effd[],c_addr1[],c_addr2[],c_city[],c_state[],
+         c_zip[],c_tel[],c_county[],c_areacode[],c_acodeoth[],c_telother[],
+         c_acodewk[],c_telwork[],c_city_desc[],c_county_desc[])
+
+   rc = $dbread(2, client_id, c.ad.rec,c.addr1,c.addr2,c.city,c.state,c.zip,
+               c.tel,c.county,c.areacode,c.acodeoth,c.telother,c.acodewk,
+               c.telwork,c.city.desc,c.county.desc)
+
+   rec_counter = 1
+   do while rc < 2
+      c_ad_uid[rec_counter] = c.ad.rec[uid]
+      c_ad_effd[rec_counter] = c.ad.rec[EFFD]
+      c_addr1[rec_counter] = c.addr1
+      c_addr2[rec_counter] = c.addr2
+      c_city[rec_counter] = c.city
+      c_state[rec_counter] = c.state
+      c_zip[rec_counter] = c.zip
+      c_tel[rec_counter] = c.tel
+      c_areacode[rec_counter] = c.areacode
+      c_acodeoth[rec_counter] = c.acodeoth
+      c_telother[rec_counter] = c.telother
+      c_acodewk[rec_counter] = c.acodewk
+      c_telwork[rec_counter] = c.telwork
+      c_city_desc[rec_counter] = c.city.desc
+      c_county[rec_counter] = c.county
+      c_county_desc[rec_counter] = c.county.desc
+       rec_counter++
+      rc = $dbreadnextdst(02, client_id, c.ad.rec,c.addr1,c.addr2,c.city,
+                        c.state,c.zip,c.tel,c.county,c.areacode,
+                        c.acodeoth,c.telother,c.acodewk,c.telwork,
+                        c.city.desc,c.county.desc)
+   enddo
+   rc = $sort(c_ad_effd[],"D", c_addr1[],c_addr2[],c_ad_uid[],c_city[],c_state[],
+         c_zip[],c_tel[],c_county[],c_areacode[],c_acodeoth[],c_telother[],
+         c_acodewk[],c_telwork[],c_city_desc[],c_county_desc[])
+'$trace("off")
+goback
+
+'++++++++++++++ Read mailing address record into array subroutine +++++++++++++
+READMLADDR:
+   $clear(c_ml_uid[],c_ml_addr1[],c_ml_addr2[],c_ml_city[],c_ml_state[],
+         c_ml_zip[],c_ml_city_desc[],c_ml_effd[])
+
+   rc = $dbread(2, client_id, c.ml.rec,c.ml.addr1,c.ml.addr2,c.ml.city,
+               c.ml.state,c.ml.zip,c.ml.city.desc)
+
+   rec_counter = 1
+   do while rc < 2
+      c_ml_uid[rec_counter] = c.ml.rec[uid]
+      c_ml_effd[rec_counter] = c.ml.rec[EFFD]
+      c_ml_addr1[rec_counter] = c.ml.addr1
+      c_ml_addr2[rec_counter] = c.ml.addr2
+      c_ml_city[rec_counter] = c.ml.city
+      c_ml_state[rec_counter] = c.ml.state
+      c_ml_zip[rec_counter] = c.ml.zip
+      c_ml_city_desc[rec_counter] = c.ml.city.desc
+       rec_counter++
+      rc = $dbreadnextdst(02, client_id, c.ml.rec,c.ml.addr1,c.ml.addr2,
+                        c.ml.city,c.ml.state,c.ml.zip,c.ml.city.desc)
+   enddo
+   rc = $sort(c_ml_effd[],"D", c_ml_addr1[],c_ml_addr2[],c_ml_city[],
+            c_ml_state[],c_ml_zip[],c_ml_city_desc[],c_ml_uid[])
+goback
+
+'++++++++++++++ Read guardian record into array subroutine ++++++++++++++++++++
+READGUARD:
+   $clear(c_cc_uid[],c_cc_effd[],c_cc_prel[],c_cc_name[],c_cc_teleh[],
+         c_cc_telew[],c_cc_emnm[],c_cc_emhph[],c_cc_emwph[],c_cc_emrel[],
+         c_cc_guard[])
+
+   rc = $dbread(2, client_id, c.cc.rec, c.cc.prel,c.cc.name,c.cc.teleh,
+               c.cc.telew,c.cc.emnm,c.cc.emhph,c.cc.emwph,c.cc.emrel,
+               c.mr.guard)
+
+   rec_counter = 1
+   do while rc < 2
+      c_cc_uid[rec_counter] = c.cc.rec[uid]
+      c_cc_effd[rec_counter] = c.cc.rec[EFFD]
+      c_cc_prel[rec_counter] = c.cc.prel
+      c_cc_name[rec_counter] = c.cc.name
+      c_cc_teleh[rec_counter] = c.cc.teleh
+      c_cc_telew[rec_counter] = c.cc.telew
+      c_cc_emnm[rec_counter] = c.cc.emnm
+      c_cc_emhph[rec_counter] = c.cc.emhph
+      c_cc_emwph[rec_counter] = c.cc.emwph
+      c_cc_emrel[rec_counter] = c.cc.emrel
+      if c.mr.guard !dp then
+         c.mr.guard = "N"
+      endif
+      c_cc_guard[rec_counter] = c.mr.guard
+       rec_counter++
+      rc = $dbreadnextdst(02, client_id, c.cc.rec,c.cc.prel,c.cc.name,
+                        c.cc.teleh,c.cc.telew,c.cc.emnm,c.cc.emhph,
+                        c.cc.emwph,c.cc.emrel, c.mr.guard)
+   enddo
+   rc = $sort(c_cc_uid[],"D", c_cc_prel[],c_cc_name[],c_cc_teleh[],
+            c_cc_telew[],c_cc_emnm[],c_cc_emhph[],c_cc_emwph[],c_cc_emrel[],
+            c_cc_guard[],c_cc_uid[])
+goback
+
+'++++++++++++++ Read Correspondent record into array subroutine +++++++++++++
+READCORR:
+   $clear(c_corr_uid[], c_corr_fn[], c_corr_ln[], c_corr_rel[],
+         c_corr_addr1[], c_corr_addr2[], c_corr_city[], c_corr_state[],  c_corr_zip[],
+         c_corr_wph[], c_corr_phone[], c_corr_cityd[], c_corr_effd[])
+
+   rc = $dbread(2, client_id, c.presprob,c.dxrec,c.dxaxis)
+
+   rc = $dbread(2, client_id, c.corr.rec, c.corr.fn, c.corr.ln,
+             c.corr.rel, c.corr.addr1, c.corr.addr2, c.corr.city, c.corr.state, c.corr.zip,
+            c.corr.phone, c.corr.cityd)
+            'c.corr.wph
+
+   rec_counter = 1
+   do while rc < 2
+      c_corr_uid[rec_counter] = c.corr.rec[uid]
+      c_corr_effd[rec_counter] = c.corr.rec[EFFD]
+      c_corr_fn[rec_counter] = c.corr.fn
+      c_corr_ln[rec_counter] = c.corr.ln
+      c_corr_rel[rec_counter] = c.corr.rel
+      c_corr_addr1[rec_counter] = c.corr.addr1
+      c_corr_addr2[rec_counter] = c.corr.addr2
+      c_corr_city[rec_counter] = c.corr.city
+      c_corr_cityd[rec_counter] = c.corr.cityd
+      c_corr_state[rec_counter] = c.corr.state
+      c_corr_zip[rec_counter] = c.corr.zip
+      c_corr_phone[rec_counter] = c.corr.phone
+      'c_corr_wph[rec_counter] = c.corr.wph
+       rec_counter++
+      rc = $dbreadnextdst(02, client_id, c.corr.rec, c.corr.fn,
+            c.corr.ln, c.corr.rel, c.corr.addr1, c.corr.city, c.corr.state, c.corr.zip,
+            c.corr.phone, c.corr.cityd)
+            'c.corr.wph
+   enddo
+   '#thumb - rle - this is dumb - either just edit the top layer
+   ' or sort by EFFD (desc) and go from there.
+   rc = $sort(c_corr_uid[],"D", c_corr_fn[], c_corr_ln[], c_corr_rel[],
+            c_corr_addr1[], c_corr_addr2[], c_corr_city[], c_corr_state[], c_corr_zip[],
+            c_corr_cityd[], c_corr_wph[], c_corr_phone[],c_corr_effd[])
+goback
+
+'++++++++++++++ Read household record info array subroutine ++++++++++++++++++
+READHH:
+   $clear(c_hh_uid[],c_hh_effd[],c_hh_name[],c_hh_id[],c_hh_relship[],
+         c_hh_age[],c_hh_current[], c_hh_staff[], c_hh_client[],
+         c_hh_cid[])
+
+   rc = $dbread(2, client_id, c.hh.rec, c.hh.name, c.hh.id, c.hh.relship,
+               c.hh.age, c.hh.current, c.hh.staff, c.hh.client, c.hh.cid)
+
+   rec_counter = 1
+   do while rc < 2
+      c_hh_uid[rec_counter] = c.hh.rec[uid]
+      c_hh_effd[rec_counter] = c.hh.rec[EFFD]
+      c_hh_name[rec_counter] = c.hh.name
+      c_hh_id[rec_counter] = c.hh.id
+      c_hh_relship[rec_counter] = c.hh.relship
+      c_hh_age[rec_counter] = c.hh.age
+      c_hh_current[rec_counter] = c.hh.current
+      c_hh_staff[rec_counter] = c.hh.staff
+      c_hh_client[rec_counter] = c.hh.client
+      c_hh_cid[rec_counter] = c.hh.cid
+       rec_counter++
+      rc = $dbreadnextdst(02, client_id, c.hh.rec, c.hh.name, c.hh.id,
+                     c.hh.relship, c.hh.age, c.hh.current, c.hh.staff,
+                     c.hh.client, c.hh.cid)
+   enddo
+
+
+   rc = $sort(c_hh_id[], c_hh_current[], c_hh_name[], c_hh_id[], c_hh_uid[],
+            c_hh_effd[], c_hh_relship[], c_hh_age[], c_hh_staff[],
+            c_hh_client[], c_hh_cid[])
+goback
+
+
+'++++++++++++++ Read household record info array subroutine ++++++++++++++++++
+READHHI:
+
+   $clear(c_inc_uid[],c_inc_effd[],c_inc_id[],c_inc_type[],c_inc_amnt[],
+         c_inc_date[],c_inc_staff[], c_inc_current[])
+
+   rc = $dbread(2, client_id, c.inc.rec, c.inc.id, c.inc.type, c.inc.amnt,
+               c.inc.date, c.inc.staff, c.inc.current)
+
+   rec_counter = 1
+   do while rc < 2
+      c_inc_uid[rec_counter] = c.inc.rec[uid]
+      c_inc_effd[rec_counter] = c.inc.rec[EFFD]
+      c_inc_id[rec_counter] = c.inc.id
+      c_inc_type[rec_counter] = c.inc.type
+      c_inc_amnt[rec_counter] = c.inc.amnt
+      c_inc_date[rec_counter] = c.inc.date
+      c_inc_staff[rec_counter] = c.inc.staff
+      c_inc_current[rec_counter] = c.inc.current
+       rec_counter++
+      rc = $dbreadnextdst(02, client_id, c.inc.rec, c.inc.id, c.inc.type,
+                     c.inc.amnt, c.inc.date, c.inc.staff, c.inc.current)
+   enddo
+
+   rc = $sort(c_inc_id[], c_inc_type[], c_inc_amnt[], c_inc_date[],
+            c_inc_staff[], c_inc_uid[], c_inc_effd[], c_inc_current[])
+goback
+
+'++++++++++++++ Read housing record info array subroutine ++++++++++++++++++
+READHOUSING:
+   $clear(c_hou_effd, c_hou_livarr, c_hou_livarro,
+         c_hou_where, c_hou_whereo, c_hou_sec8, c_hou_sec8w,
+         c_hou_edate, c_hou_staff)
+
+   rc = $dbread(2, client_id, c.hou.rec, c.hou.livarr, c.hou.livarro,
+               c.hou.where, c.hou.whereo, c.hou.sec8, c.hou.sec8w,
+               c.hou.edate, c.hou.staff)
+
+   c_hou_effd = c.hou.rec[EFFD]
+   c_hou_livarr = c.hou.livarr
+   c_hou_livarro = c.hou.livarro
+   c_hou_where = c.hou.where
+   c_hou_whereo = c.hou.whereo
+   c_hou_sec8 = c.hou.sec8
+   c_hou_sec8w = c.hou.sec8w
+   c_hou_edate = c.hou.edate
+   c_hou_staff = c.hou.staff
+
+goback
+
+'++++++++++++++ Read extra exp record into array subroutine ++++++++++++++++++++
+READEXE:
+
+   $clear(c_exe_uid[],c_exe_effd[],c_exe_type[],c_exe_sdate[],c_exe_edate[],
+         c_exe_amount[],c_exe_docdt[],c_exe_other[],c_exe_current[],
+         c_exe_staff[])
+
+   rc = $dbread(2, client_id, c.exe.rec,c.exe.type,c.exe.sdate,c.exe.edate,
+               c.exe.amount,c.exe.docdt,c.exe.other,c.exe.current,
+               c.exe.staff)
+
+   rec_counter = 1
+   do while rc < 2
+      c_exe_uid[rec_counter] = c.exe.rec[uid]
+      c_exe_effd[rec_counter] = c.exe.rec[EFFD]
+      c_exe_type[rec_counter] = c.exe.type
+      c_exe_sdate[rec_counter] = c.exe.sdate
+      c_exe_edate[rec_counter] = c.exe.edate
+      c_exe_amount[rec_counter] = c.exe.amount
+      c_exe_docdt[rec_counter] = c.exe.docdt
+      c_exe_other[rec_counter] = c.exe.other
+      c_exe_current[rec_counter] = c.exe.current
+      c_exe_staff[rec_counter] = c.exe.staff
+       rec_counter++
+      rc = $dbreadnextdst(02, client_id, c.exe.rec, c.exe.type, c.exe.sdate,
+                     c.exe.edate, c.exe.amount, c.exe.docdt,
+                     c.exe.other, c.exe.current, c.exe.staff)
+   enddo
+   rc = $sort(c_exe_current[],"D", c_exe_type[],c_exe_sdate[],c_exe_edate[],
+               c_exe_amount[],c_exe_docdt[],c_exe_other[],
+               c_exe_staff[],c_exe_effd[],c_exe_uid[])
+goback
+
+'++++++++++++++ Update name section data subroutine ++++++++++++++++++++++++++++
+UPDATEFORM2a:
+continue2 = "Y"
+do while continue2 = "Y"
+   $clear(edit_aka[], del_aka[], add_aka, save_btn)
+
+   if err_msg !dp then
+'COpy name variables to previous variable before changes to test later
+      gosub READREC2
+      $clear(p_ln, p_fn, p_mn, p_suffix)
+      p_ln = c_ln
+      p_fn = c_fn
+      p_mn = c_mn
+      p_suffix = c_suffix
+   endif
+   $submitopt("off", "Save")
+   $cancelopt("off", "Quit")
+   $form("update2a")
+
+   title = "Client Name Information"
+'  l_fin:display_header(title,err_msg,client_id)
+   suffix_str = $dct(44, c.suffix, "D")
+   name_str = c.ln + ", " + c.fn + " " + c.mn + " " + suffix_str +
+            " (" + client_id + ")"
+
+   if title dp then
+      $tag("<CENTER>") $text(title,"head") $tag("</CENTER>")
+   endif
+
+   if err_msg dp then
+      $tag("<CENTER>") $text(err_msg,"errmsg") $tag("</CENTER>")
+   endif
+
+   $tag(hr) $text("Client Name:","datatag") $text(name_str) $br() $tag(hr) $br()
+
+   $tag("<CENTER>")
+   web_str = web_dir + "Rules for Changing Name.htm"
+   $link(web_str, "Rules for Changing Name", "target='_blank'")
+   $tag("</CENTER>")
+   $br(2)
+
+   $style("normal")
+   $table("f2name", ,"width='100%'")
+      $row()
+         $col() $text("Last Name:", "datatag")
+         $col() $text("First Name:", "datatag")
+         $col() $text("Middle Name:", "datatag")
+      $row()
+      if editmode = 1 then 'view only
+         $col() $text(c_ln)
+         $col() $text(c_fn)
+         $col() $text(c_mn)
+      else
+         $col() $textbox(c_ln,,,,"Y")
+         $col() $textbox(c_fn,,,,"Y")
+         $col() $textbox(c_mn)
+      endif
+      $row()
+         $col() $text("Suffix:", "datatag")
+         $col() $text("Maiden Name:", "datatag")
+         $col() $text("Name Notes:", "datatag")
+      $row()
+      if editmode = 1 then 'view only
+         string = $dct(44, c_suffix, "D")
+         $col() $text(string)
+         $col() $text(c_maiden)
+      else
+         $col() $dropboxdct(c_suffix,44,"A","D")$editmsg(c_suffix)
+         $col() $textbox(c_maiden)
+      endif
+   $endtable("f2name")
+
+   $br() $text("Additional Name Comments:","datatag") $br()
+   if editmode = 1 then 'view only
+      $text(c_clt_nm_notes)
+   else
+      $textblock(c_clt_nm_notes, 4, 64, , , 256)
+      $countbox(c_clt_nm_notes, "(max chars is 256)")
+   endif
+
+   $br() $tag(hr) $br()
+
+   $bstyle("link", "link")
+   $tag("<CENTER>")
+   $text("{H2}Also Known As (AKA) Names{/H2}")
+   $tag("</CENTER>")
+   $table("f2aka", ,"width='100%'")
+      $row()
+         $col("left")
+         $col("left") $text("Last Name:", "datatag")
+         $col("left") $text("First Name:", "datatag")
+         $col("left") $text("Middle Name:", "datatag")
+         $col("left") $text("Suffix:", "datatag")
+      rec_counter = 1
+      do while rec_counter <= $maxarray(c_aka_lname[])
+         $row()
+         if editmode = 1 then 'view only
+            $col()
+         elseif editmode = 2 then
+            $col() $submit(edit_aka[rec_counter], "Edit")
+         elseif editmode >= 3 then
+            $col() $submit(edit_aka[rec_counter], "Edit")
+                  $submit(del_aka[rec_counter], "Del")
+         endif
+            $col("left") $text(c_aka_lname[rec_counter])
+            $col("left") $text(c_aka_fname[rec_counter])
+            $col("left") $text(c_aka_mname[rec_counter])
+            string = $dct(44, c_aka_suffix[rec_counter], "D")
+            $col("left") $text(string)
+            rec_counter++
+      enddo
+   $endtable("f2aka")
+
+   if editmode > 1 then
+      $bstyle("button", "button")
+      $tag("<CENTER>") $submit(add_aka, "Add AKA") $tag("</CENTER>")
+      $br(2)
+   endif
+
+   $sendform("update2a")
+
+   if $endbutton = "CANCEL" then
+      continue2 = "N"
+   elseif $endbutton = "SUBMIT" then
+      validation = l_fin:validname(err_msg, c_ln, c_fn, c_mn, c_maiden)
+      if validation = "N" then
+         continue2 = "Y"
+      else
+         gosub UPDATEREC2a
+         gosub UPDATEAKA
+         continue2 = "N"
+      endif
+   elseif add_aka = "Y" then
+      $clear(err_msg)
+      gosub ADDAKA
+   else
+      $clear(err_msg)
+      rec_counter = 1
+      do while rec_counter <= $maxarray(edit_aka[])
+         if edit_aka[rec_counter] = "Y"
+            gosub EDITAKA
+         endif
+         rec_counter++
+      enddo
+      rec_counter = 1
+      do while rec_counter <= $maxarray(del_aka[])
+         if del_aka[rec_counter] = "Y"
+            gosub DELETEAKA
+         endif
+         rec_counter++
+      enddo
+   endif
+enddo
+goback
+
+'++++++++++++++ Update aka section data subroutine +++++++++++++++++++++++++++++
+EDITAKA:
+   $submitopt("off", "Save")
+   $cancelopt("off", "Back")
+   $form("editaka")
+
+   title = "Edit Also Known As (AKA)"
+   l_fin:display_header(title,,client_id)
+
+   $table("editaka", ,"width='100%'")
+      $row()
+         $col("left") $text("Last Name:", "datatag")
+         $col("left") $text("First Name:", "datatag")
+         $col("left") $text("Middle Name:", "datatag")
+         $col("left") $text("Suffix:", "datatag")
+      $row()
+         $col("left") $textbox(c_aka_lname[rec_counter])
+         $col("left") $textbox(c_aka_fname[rec_counter])
+         $col("left") $textbox(c_aka_mname[rec_counter])
+         $col() $dropboxdct(c_aka_suffix[rec_counter],44,"A","D")
+               $editmsg(c_aka_suffix[rec_counter])
+   $endtable("editaka")
+
+   $sendform("editaka")
+
+   if $endbutton = "SUBMIT" then
+      $dblock()
+      rc = $dbreaduid(c_aka_uid[rec_counter], 02, client_id, c.aka.rec,
+                  c.aka.lname, c.aka.fname, c.aka.mname, c.aka.suffix)
+      if rc < 2 then
+         rtrncode = l_fin:validaka(c_aka_lname[], c_aka_fname[],
+                  c_aka_mname[], c_aka_suffix[],
+                  c_ln, c_fn, c_mn, c_suffix, rec_counter)
+         if rtrncode = 0 then
+            c.aka.lname = c_aka_lname[rec_counter]
+            c.aka.fname = c_aka_fname[rec_counter]
+            c.aka.mname = c_aka_mname[rec_counter]
+            c.aka.suffix = c_aka_suffix[rec_counter]
+            c.aka.rec[EFFD] = $today
+            rc = $dbupdateuid(c_aka_uid[rec_counter], 2, client_id, c.aka.rec,
+                        c.aka.lname, c.aka.fname, c.aka.mname, c.aka.suffix)
+         elseif rtrncode = 1 then
+            $brmsg("First and Last name are required!", 1, "W")
+            goto EDITAKA
+         endif
+      endif
+      $dbunlock()
+   endif
+goback
+
+'++++++++++++++ Delete AKA section data subroutine ++++++++++++++++++++++++++++
+DELETEAKA:
+   $submitopt("off", "Delete")
+   $cancelopt("off", "Back")
+   $form("deleleaka")
+
+   title = "Select Delete to delete AKA record."
+   l_fin:display_header(title,,client_id)
+
+   $table("deleleaka", ,"width='100%'")
+      $row()
+         $col("left") $text("Last Name:", "datatag")
+         $col("left") $text("First Name:", "datatag")
+         $col("left") $text("Middle Name:", "datatag")
+         $col("left") $text("Suffix:", "datatag")
+      $row()
+         $col("left") $text(c_aka_lname[rec_counter])
+         $col("left") $text(c_aka_fname[rec_counter])
+         $col("left") $text(c_aka_mname[rec_counter])
+         string = $dct(44, c_aka_suffix[rec_counter], "D")
+         $col("left") $text(string)
+   $endtable("deleleaka")
+
+   $sendform("deleleaka")
+
+   if $endbutton = "SUBMIT" then
+      $dblock()
+      rc = $dbremoveuid(c_aka_uid[rec_counter], 2, client_id, c.aka.rec)
+      if rc > 0 then
+         string = "Error deleting aka rc=" + $format(rc, "ZZZ")
+         $brmsg(string, 1,"W")
+      endif
+   endif
+goback
+
+'++++++++++++++ Add AKA section data subroutine ++++++++++++++++++++++++++++++++
+ADDAKA:
+   c_aka_lname[rec_counter] = c_ln
+   c_aka_fname[rec_counter] = c_fn
+   c_aka_mname[rec_counter] = c_mn
+   c_aka_suffix[rec_counter] = c_suffix
+
+   $submitopt("off", "Save")
+   $cancelopt("off", "Back")
+   $form("addaka")
+
+   title = "Add Also Known As (AKA)"
+   l_fin:display_header(title,,client_id)
+
+   $table("addtaka", ,"width='100%'")
+      $row()
+         $col("left") $text("Last Name:", "datatag")
+         $col("left") $text("First Name:", "datatag")
+         $col("left") $text("Middle Name:", "datatag")
+         $col("left") $text("Suffix:", "datatag")
+      $row()
+         $col("left") $textbox(c_aka_lname[rec_counter])
+         $col("left") $textbox(c_aka_fname[rec_counter])
+         $col("left") $textbox(c_aka_mname[rec_counter])
+         $col() $dropboxdct(c_aka_suffix[rec_counter],44,"A","D")
+               $editmsg(c_aka_suffix[rec_counter])
+   $endtable("addaka")
+
+   $sendform("addaka")
+
+   if $endbutton = "SUBMIT" then
+      rtrncode = l_fin:validaka(c_aka_lname[], c_aka_fname[],
+               c_aka_mname[], c_aka_suffix[],
+               c_ln, c_fn, c_mn, c_suffix, rec_counter)
+      if rtrncode = 0 then
+         c.aka.lname = c_aka_lname[rec_counter]
+         c.aka.fname = c_aka_fname[rec_counter]
+         c.aka.mname = c_aka_mname[rec_counter]
+         c.aka.suffix = c_aka_suffix[rec_counter]
+         $dblock()
+         rc = $dbadddst(2, client_id, c.aka.rec, c.aka.lname, c.aka.fname,
+                        c.aka.mname, c.aka.suffix)
+         $dbunlock()
+      elseif rtrncode = 1
+            $brmsg("First and Last name are required!", 1, "W")
+            goto ADDAKA
+      endif
+   endif
+goback
+
+'++++++++++++++ Update demographics section data subroutine +++++++++++++++++++
+UPDATEFORM2b:
+continue2 = "Y"
+do while continue2 = "Y"
+   $clear(save_btn)
+   if err_msg !dp then
+      gosub READREC2
+   endif
+   $submitopt("off", "Save")
+   $cancelopt("off", "Quit")
+   $form("update2b")
+
+   title = "Update Demographic Information"
+   l_fin:display_header(title,err_msg,client_id)
+
+   $table("f2b", ,"width='100%'")
+      $row()
+         $col("left") $text("Social Security Number:", "datatag")
+         $col("left") $text("Date of Birth:", "datatag")
+         $col("left") $text("Age:", "datatag")
+      $row()
+         $col("left") $textbox(c_ssn,,,,"Y")
+         $col("left") $textbox(c_bd,"DATE",,,"Y")
+         $col("left") $text(c_age_y)      'Calculate Age
+      $row()
+      $row()
+         $col("left", ,"25%") $text("Gender:", "datatag")
+         $col("left", ,"25%") $text("Ethnicity:", "datatag")
+         $col("left", ,"25%") $text("Marital Status:", "datatag")
+         $col("left", ,"25%") $text("Employment Status:", "datatag")
+      $row()
+         $col("left", ,"25%") $dropboxdct(c_sex,22,"A","D",,"Y")$editmsg(c_sex)
+         $col("left", ,"25%") $dropboxdct(c_race,23,"A","D",,"Y")$editmsg(c_race)
+         $col("left", ,"25%") $dropboxdct(c_mar,28,"A","D",,"Y")$editmsg(c_mar)
+         $col("left", ,"25%") $dropboxdct(c_empl,10,"A","D",,"Y")$editmsg(c_empl)
+   $endtable("f2b")
+
+   $br() $tag(hr) $br()
+
+   $sendform("update2b")
+
+   if $endbutton = "CANCEL" then
+      continue2 = "N"
+   elseif $endbutton = "SUBMIT" then
+      gosub UPDATEREC2b
+      continue2 = "N"
+   endif
+enddo
+goback
+
+'++++++++++++++ Display Physical address section data subroutine +++++++++++++++
+FORM2c:
+continue2 = "Y"
+do while continue2 = "Y"
+   $clear(addf2c_btn, correctf2c_btn, back_btn)
+   gosub READREC2
+
+   $submitopt("off", "Next")
+   $cancelopt("off", "Quit")
+   $form("disp2c")
+   $navbutton(back_btn, "Back")
+
+   title = "Physical Address"
+   l_fin:display_header(title,err_msg,client_id)
+
+'================= start last physical address section =========================
+   $table("f2c1h", ,"width='100%'")
+      $row()
+         $col("left")  $text("Physical Address: ", "green")
+         $col("center") $bstyle("link", "link")
+                     $submit(prevaddr_btn, "(Display Previous Addresses)")
+   $endtable("f2c1h")
+
+   $table("f2c1", ,"width='100%'")
+      $row()
+         $col("left",,"50%") $text("Physical Address", "datatag")
+         $col("left",,"50%") $text("Phone Numbers:","datatag")
+      $row()
+         $col("left",,"50%") $text(c_addr1[1])
+         $col("left",,"50%") $text("Home:","datatag")
+                        $text(c_areacode[1])
+                        $text(c_tel[1])
+      $row()
+         $col("left",,"50%") $text(c_addr2[1])
+         $col("left",,"50%") $text("Work:","datatag")
+                        $text(c_acodewk[1])
+                        $text(c_telwork[1])
+      $row()
+         $col("left",,"50%") $text(c_city_desc[1]) $text(", ")
+                        $text(c_state[1]) $text(" ")
+                        $text(c_zip[1])
+         $col("left",,"50%") $text("Other:","datatag")
+                        $text(c_acodeoth[1])
+                        $text(c_telother[1])
+      $row()
+         $col("left",,"50%") $text("County: ","datatag")
+                        $text(c_county_desc[1])
+
+   $endtable("f2c1")
+
+'Allow appropriate staff to enter new record or correct record entered today
+   if editmode >= 2 then
+      $tag("<CENTER>")
+      $bstyle("button", "button")
+      if editmode >= 3 then
+         $submit(correctf2c_btn, "Correct")
+         $submit(addf2c_btn, "Add New")
+      elseif l_fin:checkeffd(c_ad_effd[]) = "Y" then
+         $submit(correctf2c_btn, "Correct")
+      else
+         $submit(addf2c_btn, "Add New")
+      endif
+      $tag("</CENTER>")
+      $br(2) $style("error") $tag("<CENTER>")
+      $checkbox(checkedphaddr, "Physical Addressed Verified","Y")
+      $tag("</CENTER>") $br()
+   endif
+
+   $sendform("disp2c")
+
+   if $endbutton = "SUBMIT" then
+      goto FORM2d
+   elseif $endbutton = "CANCEL" then
+      continue2 = "N"
+   elseif back_btn = "Y" then
+      goto FORM2b
+   elseif prevaddr_btn = "Y" then      'display previous physical address's
+      gosub DISPPADDR
+      continue2 = "Y"
+   elseif addf2c_btn = "Y" then  'add new physical address record
+      updatetype = "A"
+      gosub UPDATEFORM2c
+      continue2 = "Y"
+   elseif correctf2c_btn = "Y" then 'correct physcial address record
+      updatetype = "C"
+      gosub UPDATEFORM2c
+      continue2 = "Y"
+   endif
+enddo
+goback
+
+'++++++++++++++ Display previous address subroutine ++++++++++++++++++++++++++++
+DISPPADDR:
+   gosub READADDR
+
+   $submitopt("off", "")
+   $cancelopt("off", "Back")
+   $form("paddr")
+
+   title = "Previous Physcial Addresses for Client"
+   l_fin:display_header(title,,client_id)
+
+   $style("normal")
+   $text("Previous Physical Addresses:", "datatag") $br()
+   $table("paddr", ,"width='100%'")
+      a_counter = 1
+      do while a_counter <= $maxarray(c_addr1[])
+         $row()
+            $col("left",,"50%") $text("Address Effective Date","datatag")
+                           $text(c_ad_effd[a_counter])
+         $row()
+            $col("left",,"50%") $text("Physical Address", "datatag")
+            $col("left",,"50%") $text("Phone Numbers:","datatag")
+         $row()
+            $col("left",,"50%") $text(c_addr1[a_counter])
+            $col("left",,"50%") $text("Home:","datatag")
+                           $text(c_areacode[a_counter])
+                           $text(c_tel[a_counter])
+         $row()
+            $col("left",,"50%") $text(c_addr2[a_counter])
+            $col("left",,"50%") $text("Work:","datatag")
+                           $text(c_acodewk[a_counter])
+                           $text(c_telwork[a_counter])
+         $row()
+            $col("left",,"50%") $text(c_city_desc[a_counter]) $text(", ")
+                           $text(c_state[a_counter]) $text(" ")
+                           $text(c_zip[a_counter])
+            $col("left",,"50%") $text("Other:","datatag")
+                           $text(c_acodeoth[a_counter])
+                           $text(c_telother[a_counter])
+         $row()
+            $col("left",,"50%") $text(c_county_desc[a_counter])
+         $row()
+            $col()
+            $text("=============================")
+         a_counter++
+      enddo
+   $endtable("paddr")
+
+   %include c_pbutton
+
+   $sendform("paddr")
+
+   if $endbutton = "CANCEL" then
+      goback
+   endif
+goback
+
+'++++++++++++++ Update Physical address section data subroutine +++++++++++++++
+UPDATEFORM2c:
+'$trace("path","tracesrch2") $trace("watch", c_ad_uid[1], updatetype) $trace("on")
+$clear(err_msg)
+continue2 = "Y"
+do while continue2 = "Y"
+   $clear(save_btn,prevaddr_btn)
+
+   if err_msg !dp then
+      gosub READREC2
+   endif
+
+   $submitopt("off", "Save")
+   $cancelopt("off", "Quit")
+   $form("update2c")
+
+   if updatetype = "A" then
+      title = "Add Physical Address"
+   else
+      title = "Correct Physical Address"
+   endif
+   l_fin:display_header(title,err_msg,client_id)
+
+
+   $text("Physical Address:", "green") $br()
+   $table("phyaddr", ,"width='100%'")
+      $row()
+         $col("left") $text("Addr1: ", "datatag") $textbox(c_addr1[1],,26,26)
+      $row()
+         $col("left") $text("Addr2: ", "datatag") $textbox(c_addr2[1],,26,26)
+      $row()
+         $col() $text("City: ", "datatag")
+            city_counter = 1
+            do while city_counter <= $maxarray(city_code[])
+                  if city_code[city_counter] = "OTHER" then
+                     $dropbox(c_city[1], city_desc[city_counter],
+                           city_code[city_counter],,,"OTHERCITY",
+                                               "OTHERCITY")
+                  elseif city_status[city_counter] = "A" then
+                     $dropbox(c_city[1], city_desc[city_counter],
+                           city_code[city_counter])
+                  endif
+               city_counter++
+            enddo
+            $block("OTHERCITY","OTHERCITY")
+               $table("OTHERCITY","width='100%'")
+               $row() $col() $text("Enter City:", "datatag")
+                        $textbox(c_city_desc[1],,25,25)
+               $endtable("OTHERCITY")
+            $endblock("OTHERCITY","OTHERCITY")
+      $row()
+         $col("left") $text("State:", "datatag")
+         $dropboxdct(c_state[1],32,"A","D")
+      $row()
+         $col("left") $text("Zip: ", "datatag") $textbox(c_zip[1],,5,5)
+      $row()
+         $col("left") $text("County:", "datatag")
+         $dropboxdct(c_county[1],46,"A","D")
+   $endtable("phyaddr")
+
+   $br()
+   $style("normal")
+   $table("phone","width='100%'")
+      $row() $col("left",,"50%") $text("Phone Numbers:","green")
+      $row() $col("left",,"50%") $text("Home:","datatag")
+            $textbox(c_areacode[1],,3,3)
+            $textbox(c_tel[1],,8,8)
+      $row() $col("left",,"50%") $text("Work:","datatag")
+            $textbox(c_acodewk[1],,3,3)
+            $textbox(c_telwork[1],,8,8)
+      $row() $col("left",,"50%") $text("Other:","datatag")
+            $textbox(c_acodeoth[1],,3,3)
+            $textbox(c_telother[1],,8,8)
+   $endtable("phone")
+
+   $br() $tag(hr) $br()
+
+   $sendform("update2c")
+
+   if $endbutton = "CANCEL" then
+      continue2 = "N"
+   elseif $endbutton = "SUBMIT" then
+      validzipflag = l_fin:validzip(c_zip[1])
+      if validzipflag != "Y"
+         err_msg = validzipflag
+         continue2 = "Y"
+         goto ERRORADDR
+      endif
+      if c_areacode[1] dp or c_tel[1] dp then
+         validpnumber = l_fin:valphone(c_areacode[1],c_tel[1])
+         if validpnumber != "Y" then
+            err_msg = "Home " + validpnumber
+            continue2 = "Y"
+            goto ERRORADDR
+         endif
+      endif
+      if c_acodewk[1] dp or c_telwork[1] dp then
+         validpnumber = l_fin:valphone(c_acodewk[1],c_telwork[1])
+         if validpnumber != "Y" then
+            err_msg = "Work " + validpnumber
+            continue2 = "Y"
+            goto ERRORADDR
+         endif
+      endif
+      if c_acodeoth[1] dp or c_telother[1] dp then
+         validpnumber = l_fin:valphone(c_acodeoth[1],c_telother[1])
+         if validpnumber != "Y" then
+            err_msg = "Other " + validpnumber
+            continue2 = "Y"
+            goto ERRORADDR
+         endif
+      endif
+
+      $clear(county_code)
+      county_code = $dct(47, c_city[1], "3")
+      if (county_code dp) and (c_county[1] != county_code) then
+         err_msg = "Incorrect County for City"
+         continue2 = "Y"
+         goto ERRORADDR
+      endif
+
+      c.addr1 = $uc(c_addr1[1])
+      c.addr2 = $uc(c_addr2[1])
+      c.city = c_city[1]
+      c.state = c_state[1]
+      c.zip = c_zip[1]
+      c.tel = c_tel[1]
+      c.county = c_county[1]
+      c.areacode = c_areacode[1]
+      c.acodeoth = c_acodeoth[1]
+      c.telother = c_telother[1]
+      c.acodewk = c_acodewk[1]
+      c.telwork = c_telwork[1]
+      if c.city != "OTHER" then
+         c_city_desc[1] = $dct(47, c.city, "D")
+      else
+         c_city_desc[1] = $uc(c_city_desc[1])
+      endif
+      c.city.desc = c_city_desc[1]
+      if c.county != "OTHER" then
+         c_county_desc[1] = $dct(46, c.county, "D")
+      else
+         c_county_desc[1] = $uc(c_county_desc[1])
+      endif
+      c.county.desc = c_county_desc[1]
+
+      c.ad.rec[EFFD] = $today
+      retry = 0
+      if updatetype = "A" then
+         $dblock()
+         rc = $dbadddst(2, client_id, c.ad.rec,c.addr1,c.addr2,c.city,
+                           c.state,c.zip,c.tel,c.county,c.areacode,
+                           c.acodeoth,c.telother,c.acodewk,c.telwork,
+                           c.city.desc,c.county.desc)
+         $dbunlock()
+         if rc != 0 then
+            $brmsg("Error saving physical address!", 1, "W")
+            continue2 = "Y"
+         else
+            continue2 = "N"
+            goto UPDATEFORM2d
+         endif
+      else
+         $dblock()
+
+         rc = $dbupdateuid(c_ad_uid[1], 2, client_id, c.ad.rec, c.addr1,
+                       c.addr2, c.city, c.state, c.zip, c.tel, c.county,
+                       c.areacode, c.acodeoth, c.telother, c.acodewk,
+                       c.telwork, c.city.desc, c.county.desc)
+         if rc > 1 then
+            $brmsg("Error updating physical address!", 1)
+            string = "script:" + $scriptid + " Line:" + $sourceline +
+                  "rc:" + $format(rc, "ZZZ")
+            $brmsg(string, 2, "W", "ERROR")
+            continue2 = "Y"
+         else
+            continue2 = "N"
+            goto UPDATEFORM2d
+         endif
+      endif
+   endif
+'$trace("off")
+ERRORADDR:
+enddo
+goback
+
+'++++++++++++++ Update mailing address section data subroutine ++++++++++++++++
+FORM2d:
+continue2 = "Y"
+do while continue2 = "Y"
+   $clear(addf2d_btn, correctf2d_btn, back_btn)
+   gosub READREC2
+
+   $submitopt("off", "Next")
+   $cancelopt("off", "Quit")
+   $form("disp2d")
+   $navbutton(back_btn, "Back")
+
+   title = "Mailing Address"
+   l_fin:display_header(title,err_msg,client_id)
+
+'================= start last mailing address section ==========================
+   $table("f2c2h", ,"width='100%'")
+      $row()
+         $col("left") $text("Mailing Address: ", "green")
+         $col("center") $bstyle("link", "link")
+          $submit(prevmladdr_btn, "(Display Previous Mailing Addresses)")
+   $endtable("f2c2h")
+   $table("f2c2", ,"width='100%'")
+      $row()
+         $col("left",,"50%") $text("Mailing Address", "datatag")
+      $row()
+         $col("left",,"50%") $text(c_ml_addr1[1])
+      $row()
+         $col("left",,"50%") $text(c_ml_addr2[1])
+      $row()
+         $col("left",,"50%") $text(c_ml_city_desc[1]) $text(", ")
+                        $text(c_ml_state[1]) $text(" ")
+                        $text(c_ml_zip[1])
+   $endtable("f2c2")
+
+'Allow appropriate staff to enter new record or correct record entered today
+   if editmode >= 2 then
+      $bstyle("button", "button")
+      $tag("<CENTER>")
+      if editmode >= 3 then
+         $submit(correctf2d_btn, "Correct")
+         $submit(addf2d_btn, "Add New")
+      elseif l_fin:checkeffd(c_ml_effd[]) = "Y" then
+         $submit(correctf2d_btn, "Correct")
+      else
+         $submit(addf2d_btn, "Add New")
+      endif
+      $tag("</CENTER>")
+      $br(2) $style("error") $tag("<CENTER>")
+      $checkbox(checkedmladdr, "Mailing Addressed Verified","Y")
+      $tag("</CENTER>") $br()
+   endif
+
+   $sendform("disp2d")
+
+   if $endbutton = "SUBMIT" then
+      goto FORM2e
+   elseif $endbutton = "CANCEL" then
+      continue2 = "N"
+   elseif back_btn = "Y" then
+      goto FORM2c
+   elseif prevmladdr_btn = "Y" then 'display previous mailing address's
+      gosub DISPPMLADDR
+      continue = "Y"
+   elseif addf2d_btn = "Y" then  'add new physical address record
+      updatetype = "A"
+      gosub UPDATEFORM2d
+      continue2 = "Y"
+   elseif correctf2d_btn = "Y" then 'correct physcial address record
+      updatetype = "C"
+      gosub UPDATEFORM2d
+      continue2 = "Y"
+   endif
+enddo
+goback
+
+'++++++++++++++ Display previous mailing address subroutine +++++++++++++++++++
+DISPPMLADDR:
+   gosub READMLADDR
+
+   $submitopt("off", "")
+   $cancelopt("off", "Back")
+   $form("pmladdr")
+
+   title = "Previous Mailing Addresses for Client"
+   l_fin:display_header(title,,client_id)
+
+   $style("normal")
+   $text("Previous Mailing Addresses:", "datatag") $br()
+   $table("pmladdr", ,"width='100%'")
+      a_counter = 1
+      do while a_counter <= $maxarray(c_ml_addr1[])
+         $row()
+            $col("left",,"50%") $text("Address Effective Date","datatag")
+                           $text(c_ml_effd[a_counter])
+         $row()
+            $col("left",,"50%") $text("Mailing Address", "datatag")
+         $row()
+            $col("left",,"50%") $text(c_ml_addr1[a_counter])
+         $row()
+            $col("left",,"50%") $text(c_ml_addr2[a_counter])
+         $row()
+            $col("left",,"50%") $text(c_ml_city_desc[a_counter]) $text(", ")
+                           $text(c_ml_state[a_counter]) $text(" ")
+                           $text(c_ml_zip[a_counter])
+         $row()
+            $col()
+            $text("=============================")
+         a_counter++
+      enddo
+   $endtable("pmladdr")
+
+   %include c_pbutton
+
+   $sendform("pmladdr")
+
+   if $endbutton = "CANCEL" then
+      goback
+   endif
+goback
+
+'++++++++++++++ Update mailing address section data subroutine ++++++++++++++++
+UPDATEFORM2d:
+$clear(err_msg)
+copyaddr = "Y"
+continue2 = "Y"
+do while continue2 = "Y"
+   if err_msg !dp then
+      gosub READREC2
+   endif
+
+   $submitopt("off", "Save")
+   $cancelopt("off", "Quit")
+   $form("update2d")
+
+   if updatetype = "A" then
+      title = "Add Mailing Address"
+   else
+      title = "Correct Mailing Address"
+   endif
+   l_fin:display_header(title,err_msg,client_id)
+
+   $table("mladdrh", ,"width='100%'")
+      $row()
+         $col() $col("center") $bstyle("link", "link")
+          $submit(prevmladdr_btn, "(Display Previous Mailing Addresses)")
+      $row()
+         $col("left") $text("Mailing Address:", "green")
+         $col("right")
+            $text("Mailing address same as physical address", "datatag")
+            $radio(copyaddr, "Yes", "Y",,,"NOCOPYADDR","NOCOPYADDR")
+            $radio(copyaddr, "No", "N",,,"NEWADDR","NEWADDR")
+   $endtable("mladdrh")
+
+   $block("NEWADDR","NEWADDR")
+      $table("mladdr", ,"width='100%'")
+         $row()
+            $col("left") $text("Addr1:", "datatag")
+            $textbox(c_ml_addr1[1],,26,26)
+         $row()
+            $col("left") $text("Addr2:", "datatag")
+            $textbox(c_ml_addr2[1],,26,26)
+         $row()
+            $col() $text("City:", "datatag")
+            city_counter = 1
+            do while city_counter <= $maxarray(city_code[])
+               if city_code[city_counter] = "OTHER" then
+                  $dropbox(c_ml_city[1], city_desc[city_counter],
+                     city_code[city_counter],,,"OTHERCITY","OTHERCITY")
+               elseif city_status[city_counter] = "A" then
+                  $dropbox(c_ml_city[1], city_desc[city_counter],
+                        city_code[city_counter])
+               endif
+               city_counter++
+            enddo
+            $block("OTHERCITY","OTHERCITY")
+               $table("OTHERCITY","width='100%'")
+               $row() $col() $text("Enter City:", "datatag")
+                        $textbox(c_ml_city_desc[1],,25,25)
+               $endtable("OTHERCITY")
+            $endblock("OTHERCITY","OTHERCITY")
+         $row()
+            $col("left") $text("State:", "datatag")
+            $dropboxdct(c_ml_state[1],32,"A","D")
+         $row()
+            $col("left") $text("Zip:", "datatag")
+            $textbox(c_ml_zip[1],,5,5)
+   $endtable("mladdr")
+   $endblock("NEWADDR","NEWADDR")
+
+   $block("NOCOPYADDR","NOCOPYADDR")
+      $table("f2c1", ,"width='100%'")
+         $row()
+            $col("left",,"50%")
+            $text("Using Physical Address as mailing address", "datatag")
+         $row()
+            $col("left",,"50%") $text(c_addr1[1])
+         $row()
+            $col("left",,"50%") $text(c_addr2[1])
+         $row()
+            $col("left",,"50%") $text(c_city_desc[1]) $text(", ")
+                           $text(c_state[1]) $text(" ")
+                           $text(c_zip[1])
+      $endtable("f2c1")
+   $endblock("NOCOPYADDR","NOCOPYADDR")
+
+   $br() $tag(hr) $br()
+
+   $sendform("update2d")
+
+   if $endbutton = "CANCEL" then
+      continue2 = "N"
+   elseif $endbutton = "SUBMIT" then
+      if copyaddr = "Y" then
+         c_ml_addr1[1] = c_addr1[1]
+         c_ml_addr2[1] = c_addr2[1]
+         c_ml_city[1] = c_city[1]
+         c_ml_state[1] = c_state[1]
+         c_ml_zip[1] = c_zip[1]
+         c_ml_city_desc[1] = c_city_desc[1]
+      endif
+      validzipflag = l_fin:validzip(c_ml_zip[1])
+      if validzipflag != "Y"
+         err_msg = validzipflag
+         continue2 = "Y"
+         goto ERRORMLADDR
+      endif
+
+'     $dblock()
+'     if updatetype = "C" then
+'        rc = $dbreaduid(c_ml_uid[1], 02, client_id, c.ml.rec)
+'     else
+'        rc = $dbread(2, client_id, c.ml.rec,c.ml.addr1)
+'     endif
+
+      c.ml.addr1 = $uc(c_ml_addr1[1])
+      c.ml.addr2 = $uc(c_ml_addr2[1])
+      c.ml.city = c_ml_city[1]
+      c.ml.state = c_ml_state[1]
+      c.ml.zip = c_ml_zip[1]
+      if c.ml.city != "OTHER" then
+         c_ml_city_desc[1] = $dct(47, c.ml.city, "D")
+      else
+         c_ml_city_desc[1] = $uc(c_ml_city_desc[1])
+      endif
+      c.ml.city.desc = c_ml_city_desc[1]
+
+      c.ml.rec[EFFD] = $today
+      if updatetype = "A" then
+         $dblock()
+         rc = $dbadddst(2, client_id, c.ml.rec, c.ml.addr1, c.ml.addr2,
+                     c.ml.city, c.ml.state, c.ml.zip, c.ml.city.desc)
+         $dbunlock()
+         if rc != 0 then
+            $brmsg("Error saving mailing address!", 1, "W")
+            continue2 = "Y"
+         else
+            continue2 = "N"
+         endif
+      else
+         $dblock()
+         rc = $dbupdateuid(c_ml_uid[1], 2, client_id, c.ml.rec,c.ml.addr1,
+                       c.ml.addr2,c.ml.city,c.ml.state,c.ml.zip,
+                       c.ml.city.desc)
+         if rc > 1 then
+            $brmsg("Error updating mailing address!", 1, "W")
+            continue2 = "Y"
+         else
+            continue2 = "N"
+         endif
+      endif
+   endif
+ERRORMLADDR:
+enddo
+goback
+
+'+++++++++++++ Display Guardian/Contact section data subroutine ++++++++++++++++
+FORM2e:
+continue2 = "Y"
+do while continue2 = "Y"
+   $clear(addf2e_btn, correctf2e_btn, back_btn)
+   gosub READREC2
+
+   $submitopt("off", "Next")
+   $cancelopt("off", "Quit")
+   $form("disp2e")
+   $navbutton(back_btn, "Back")
+
+   title = "Guardian/Contact Address"
+   l_fin:display_header(title,err_msg,client_id)
+
+'================= start Guardian Information/Contact section ==================
+
+   $table("f2e1", ,"width='100%'")
+      $row()
+         if current_age >= 18 then
+            $col("left") $text("Guardian Information: ", "green")
+         else
+            $col("left") $text("Guardian/Parent Information: ", "datatag")
+         endif
+      $row()
+   $endtable("f2e1")
+
+   $table("f2e", ,"width='100%'")
+      $row()
+         $col("left") $text("Does client have a legal guardian?", "datatag")
+         string = $dct(29, c_cc_guard[1], "D")
+         $text(string)
+      $row()
+   $endtable("f2e")
+
+   if current_age >= 18 and c_cc_guard[1] != "Y" then
+      goto NOGUARDD
+   endif
+
+   $table("f2e2", ,"width='100%'")
+      $row()
+         if current_age >= 18 or
+           (current_age < 18 and c_cc_guard[1] = "Y")  then
+            $col("left") $text("Guardian Name:", "datatag")
+         else
+            $col("left") $text("Parent Name:", "datatag")
+         endif
+         $text(c_cc_name[1])
+      $row()
+         string = $dct(2224, c_cc_prel[1], "D")
+         $col("left") $text ("Relationship:", "datatag") $text(string)
+      $row()
+         $col("left") $text("Home Phone:", "datatag") $text(c_cc_teleh[1])
+      $row()
+         $col("left") $text("Work Phone:", "datatag") $text(c_cc_telew[1])
+   $endtable("f2e2")
+
+NOGUARDD:
+   $table("f2e3", ,"width='100%'")
+      $row()
+         $col("left") $text("Emergency Contact: ", "green")
+   $endtable("f2e3")
+
+   $table("f2e4", ,"width='100%'")
+      $row()
+         $col("left") $text("Contact Name:", "datatag")
+         $text(c_cc_emnm[1])
+      $row()
+         string = $dct(55, c_cc_emrel[1], "D")
+         $col("left") $text ("Relationship:", "datatag") $text(string)
+      $row()
+         $col("left") $text("Home Phone:", "datatag") $text(c_cc_emhph[1])
+      $row()
+         $col("left") $text("Work Phone:", "datatag") $text(c_cc_emwph[1])
+   $endtable("f2e4")
+
+
+'Allow appropriate staff to enter new record or correct record entered today
+   if editmode >= 2 then
+      $bstyle("button", "button")
+      $tag("<CENTER>")
+      if editmode >= 3 then
+         $submit(correctf2e_btn, "Correct")
+         $submit(addf2e_btn, "Add New")
+      elseif l_fin:checkeffd(c_cc_effd[]) = "Y" then
+         $submit(correctf2e_btn, "Correct")
+      else
+         $submit(addf2e_btn, "Add New")
+      endif
+      $tag("</CENTER>")
+      $br(2) $style("error") $tag("<CENTER>")
+      $checkbox(checkedguard, "Guardian Information Verified", "Y")
+      $tag("</CENTER>") $br()
+   endif
+
+   $sendform("disp2e")
+
+   if $endbutton = "SUBMIT" then
+      goto FORM2f
+   elseif $endbutton = "CANCEL" then
+      continue2 = "N"
+   elseif back_btn = "Y" then
+      goto FORM2d
+   elseif addf2e_btn = "Y" then  'add new physical address record
+      updatetype = "A"
+      gosub UPDATEFORM2e
+      continue2 = "Y"
+   elseif correctf2e_btn = "Y" then 'correct physcial address record
+      updatetype = "C"
+      gosub UPDATEFORM2e
+      continue2 = "Y"
+   endif
+enddo
+goback
+
+'++++++++++++++ Update Guardian/Contact section data subroutine ++++++++++++++++
+UPDATEFORM2e:
+$clear(err_msg)
+continue2 = "Y"
+do while continue2 = "Y"
+
+   if err_msg !dp then
+      gosub READREC2
+   endif
+
+   $submitopt("off", "Save")
+   $cancelopt("off", "Quit")
+   $form("update2e")
+
+   if updatetype = "A" then
+      title = "Add Contact Address"
+   else
+      title = "Correct Contact Address"
+   endif
+   l_fin:display_header(title,err_msg,client_id)
+
+   $table("guardh", ,"width='100%'")
+      $row()
+         $col("left") $text("Does Client have a legal Guardian?", "datatag")
+         $radio(c_cc_guard[1], "Yes", "Y",,,"YESGUARD","YESGUARD")
+         $radio(c_cc_guard[1], "No", "N",,,"NOGUARD","NOGUARD")
+   $endtable("guardh")
+
+   $block("YESGUARD","YESGUARD")
+      $text("Guardianship Information", "green")
+   $endblock("YESGUARD","YESGUARD")
+
+   $block("NOGUARD","NOGUARD")
+      if current_age < 18 then
+      $text("Parent Information", "green")
+      endif
+   $endblock("NOGUARD","NOGUARD")
+
+   $table("guardian", ,"width='100%'")
+            $row()
+               $col("left") $text("Name:       ", "datatag")
+                         $textbox(c_cc_name[1],,31,31)
+            $row()
+               $col("left") $text("Relationship:", "datatag")
+                         $dropboxdct(c_cc_prel[1],2224,"A","D")
+            $row()
+               $col("left") $text("Home Phone:", "datatag")
+                         $textbox(c_cc_teleh[1],,14,14)
+            $row()
+               $col("left") $text("Work Phone:", "datatag")
+                         $textbox(c_cc_telew[1],,14,14)
+   $endtable("guardian")
+   $table("contactinfo", ,"width='100%'")
+      $row() $col("left") $text("Emergency Contact Information", "green")
+      $row() $col("left") $text("Name:", "datatag")
+                     $textbox(c_cc_emnm[1],,31,31)
+      $row() $col("left") $text("Relationship:", "datatag")
+                     $dropboxdct(c_cc_emrel[1],55,"A","D")
+      $row() $col("left") $text("Home Phone:", "datatag")
+                     $textbox(c_cc_emhph[1],,14,14)
+      $row() $col("left") $text("Work Phone:", "datatag")
+                     $textbox(c_cc_emwph[1],,14,14)
+   $endtable("contactinfo")
+
+   $br() $tag(hr) $br()
+
+   $sendform("update2e")
+
+
+   if $endbutton = "CANCEL" then
+      continue2 = "N"
+   elseif $endbutton = "SUBMIT" then
+      $dblock()
+      if updatetype = "C" then
+         rc = $dbreaduid(c_cc_uid[1], 02, client_id, c.cc.rec, c.cc.prel)
+      endif
+
+      if current_age >= 18 and c_cc_guard[1] != "Y" then
+         $clear(c_cc_name[], c_cc_prel[], c_cc_teleh[], c_cc_telew[],
+               c.cc.name, c.cc.prel, c.cc.teleh, c.cc.telew)
+      else
+         c.cc.prel = c_cc_prel[1]
+         c.cc.name = $uc(c_cc_name[1])
+         c.cc.teleh = c_cc_teleh[1]
+         c.cc.telew = c_cc_telew[1]
+      endif
+      c.cc.emnm = c_cc_emnm[1]
+      c.cc.emhph = c_cc_emhph[1]
+      c.cc.emwph = c_cc_emwph[1]
+      c.cc.emrel = c_cc_emrel[1]
+      c.mr.guard = c_cc_guard[1]
+      c.cc.rec[EFFD] = $today
+
+      if updatetype = "A" then
+         $dblock()
+         rc = $dbadddst(2, client_id, c.cc.rec, c.cc.prel, c.cc.name,
+                     c.cc.teleh, c.cc.telew, c.cc.emnm, c.cc.emhph,
+                     c.cc.emwph, c.cc.emrel, c.mr.guard)
+         $dbunlock()
+         if rc != 0 then
+            $brmsg("Error saving contact information!", 1, "W")
+            continue2 = "Y"
+         else
+            continue2 = "N"
+         endif
+      else
+         $dblock()
+         rc = $dbupdateuid(c_cc_uid[1],2,client_id,c.cc.rec,c.cc.prel,
+                       c.cc.name,c.cc.teleh,c.cc.telew,c.cc.emnm,
+                       c.cc.emhph,c.cc.emwph,c.cc.emrel,c.mr.guard)
+         $dbunlock()
+         if rc > 1 then
+            $brmsg("Error updating guardian/contact information!", 1, "W")
+            continue2 = "Y"
+         else
+            continue2 = "N"
+         endif
+      endif
+   elseif $endbutton = "CANCEL" then
+      continue2 = "N"
+   endif
+enddo
+goback
+
+'+++++++++++++ Display Primary Correspondent section data subroutine ++++++++++++++++
+form2f:
+continue2 = "Y"
+do while continue2 = "Y"
+   $clear(addf2f_btn, correctf2f_btn, back_btn)
+   gosub READREC2
+
+   $submitopt("off", "Next")
+   $cancelopt("off", "Quit")
+   $form("disp2f")
+   $navbutton(back_btn, "Back")
+
+   title = "Primary Correspondent"
+   l_fin:display_header(title,err_msg,client_id)
+
+'================= start Primary Correspondent Information/Contact section ==================
+   $table(1,"tight","width='100%'")
+      $row()
+      $col(,,"50%") $text("Primary Correspondent: ", "green")
+      $col(,,"50%") $text("Phone Numbers:", "green")
+
+      $row()
+      $col()   $text(c_corr_fn[1])
+               $text(" ")
+               $text(c_corr_ln[1])
+      $col()   $text("Home:","datatag")
+               $text(c_corr_phone[1])
+      $row()
+      $col()   $text(c_corr_addr1[1])
+      if c_corr_addr2[1] dp then
+         $row()
+         $col()   $text(c_corr_addr2[1])
+      endif
+      $row()
+      $col()   $text(c_corr_cityd[1])
+               $text(", ")
+               $text(c_corr_state[1])
+               $text(" ")
+               $text(c_corr_zip[1])
+      $col()   $text("Relationship: ", "green")
+
+      $row()
+      $col()
+      $col()   $text(`$dct(9420, c_corr_rel[1], "D")`)
+
+   $endtable(1)
+   $BR(2)
+
+   if c.presprob !dp and c.dxaxis !dp then
+      $fieldset("Warning",,"h1")
+      $text("This client does not have a diagnosis {B}OR{/B} presenting problem so they will not be batched to CARE.")
+      $text("If this is a MR client that will not be seen or diagnosed soon, then be sure to ")
+      T = "<a href='mailto:dollyl@gcmhmr.com?Subject=Need%20Presenting%20Problem%20-%20Client:%20" + client_id + "%20" + c.ln + "&body=CLICK%20SEND%20TO%20COMPLETE%20THE%20PROCESS'>email Dolly</a>"
+      $ctag(T)
+      $endfieldset()
+      $br()
+   endif
+
+'Allow appropriate staff to enter new record or correct record entered today
+   if editmode >= 2 then
+      $bstyle("button", "button")
+      $tag("<CENTER>")
+      if editmode >= 3 then
+         $submit(correctf2f_btn, "Correct")
+         $submit(addf2f_btn, "Add New")
+      elseif l_fin:checkeffd(c_corr_effd[]) = "Y" then
+         $submit(correctf2f_btn, "Correct")
+      else
+         $submit(addf2f_btn, "Add New")
+      endif
+      $tag("</CENTER>")
+   endif
+
+   if $today < 3/15/2010 then
+      $br(2)
+      $fieldset("News",,"h1")
+      T = "<span class='datatag'>Notice: 02/11/2010</span> - "
+      + "All fields are required if you enter primary correspondent data due to CARE batching.  "
+      + "Also, the work phone has been removed as CARE does not accept it."
+      $ctag(T)
+      $endfieldset()
+   endif
+
+   $sendform("disp2f")
+
+   if $endbutton = "SUBMIT" then
+      goto FORM2MIL
+   elseif $endbutton = "CANCEL" then
+      continue2 = "N"
+   elseif back_btn = "Y" then
+      goto FORM2e
+   elseif addf2f_btn = "Y" then  'add new correspondent record
+      updatetype = "A"
+      gosub UPDATEform2f
+      continue2 = "Y"
+   elseif correctf2f_btn = "Y" then 'correct correspondent record
+      updatetype = "C"
+      gosub UPDATEform2f
+      continue2 = "Y"
+   endif
+enddo
+goback
+
+'++++++++++++++ Update Correspondent section data subroutine ++++++++++++++++
+UPDATEform2f:
+$clear(err_msg)
+continue2 = "Y"
+do while continue2 = "Y"
+
+   if err_msg !dp then
+      gosub READREC2
+   endif
+
+   $submitopt("off", "Save")
+   $cancelopt("off", "Quit")
+   $form("update2f")
+
+   if updatetype = "A" then
+      title = "Add Primary Correspondent"
+   else
+      title = "Correct Primary Correspondent"
+   endif
+   l_fin:display_header(title,err_msg,client_id)
+
+   $br()
+   $text("{center}")
+   $text("Primary Correspondent Contact Information", "green")
+
+   $table("Corrinfo", "tight","width='100%'")
+      $row()
+      $col()   $text("First Name:", "datatag")
+      $col()   $textbox(c_corr_fn[1],,31,31,"Y")
+
+      $row()
+      $col()   $text("Last Name:", "datatag")
+      $col()   $textbox(c_corr_ln[1],,31,31,"Y")
+
+      $row()
+      $col()   $text("Street:", "datatag")
+      $col()   $textbox(c_corr_addr1[1],,26,26,"Y")
+      $row()
+      $col()
+      $col()   $textbox(c_corr_addr2[1],,26,26)
+      $row()
+      $col()   $text("City:", "datatag")
+      $col()
+      city_counter = 0
+      do while city_counter++ < $maxarray(city_code[])
+         if city_code[city_counter] = "OTHER" then
+            $dropbox(c_corr_city[1], city_desc[city_counter],
+               city_code[city_counter],,,"OTHERCITY","OTHERCITY")
+         elseif city_status[city_counter] = "A" then
+            $dropbox(c_corr_city[1], city_desc[city_counter],
+                  city_code[city_counter])
+         endif
+      enddo
+      $block("OTHERCITY","OTHERCITY")
+         $table("OTHERCITY","tight","width='100%'")
+         $row()
+         $col()   $text("Enter City:", "datatag")
+         $col()   $textbox(c_corr_cityd[1],,25,25)
+         $endtable("OTHERCITY")
+      $endblock("OTHERCITY","OTHERCITY")
+
+      $row()
+      $col()   $text("State:", "datatag")
+      $col()   $dropboxdct(c_corr_state[1],32,"A","D")
+
+      $row()
+      $col()   $text("Zip:", "datatag")
+      $col()   $textbox(c_corr_zip[1],,5,5,"Y")
+
+      $row()
+      $col()   $text("Relationship:", "datatag")
+      $col()   $dropboxdct(c_corr_rel[1],9420,"A","D")
+
+      $row()
+      $col()   $text("Home Phone:", "datatag")
+      $col()   $textbox(c_corr_phone[1],,14,14)
+   $endtable("corrinfo")
+
+   $br() $tag(hr) $br()
+
+   $sendform("update2f")
+
+
+   if $endbutton = "CANCEL" then
+      continue2 = "N"
+   elseif $endbutton = "SUBMIT" then
+      $clear(err_msg)
+      '*validate
+      if c_corr_fn[1] !dp then
+         err_msg = "First Name required"
+      endif
+      if c_corr_ln[1] !dp then
+         err_msg = "Last Name required"
+      endif
+      if c_corr_addr1[1] !dp then
+         err_msg = "Street address required"
+      endif
+      if c_corr_city[1] !dp then
+         err_msg = "City required"
+      endif
+      if c_corr_city[1] = "OTHER" and c_corr_cityd[1] !dp then
+         err_msg = "Other City Description Required"
+      endif
+      if c_corr_state[1] !dp then
+         err_msg = "State required"
+      endif
+      if c_corr_zip[1] !dp then
+         err_msg = "Zipcode required"
+      endif
+      if c_corr_rel[1] !dp then
+         err_msg = "Relationship required"
+      endif
+      'if c_corr_phone[1] !dp then
+      '   err_msg = "Home Phone required"
+      'endif
+
+      'if err_msg dp then gosub UPDATEform2f, goback endif
+
+      if err_msg !dp then
+
+      '''''''''''''''''
+      $dblock()
+      if updatetype = "C" then
+         rc = $dbreaduid(c_corr_uid[1], 02, client_id, c.corr.rec, c.corr.rel)
+      endif
+
+      c.corr.fn = $uc(c_corr_fn[1])
+      c.corr.ln = $uc(c_corr_ln[1])
+      c.corr.addr1 = c_corr_addr1[1]
+      c.corr.addr2 = c_corr_addr2[1]
+      c.corr.city = c_corr_city[1]
+      if c.corr.city != "OTHER" then
+         c_corr_cityd[1] = $dct(47, c.corr.city, "D")
+      else
+         c_corr_cityd[1] = $uc(c_corr_cityd[1])
+      endif
+      c.corr.cityd = c_corr_cityd[1]
+      c.corr.state = $UC(c_corr_state[1])
+      c.corr.zip = c_corr_zip[1]
+      c.corr.rel = c_corr_rel[1]
+      c.corr.phone = c_corr_phone[1]
+      c.corr.rec[EFFD] = $today
+
+      if updatetype = "A" then
+         $dblock()
+         rc = $dbadddst(2, client_id, c.corr.rec, c.corr.rel, c.corr.fn, c.corr.ln,
+                     c.corr.addr1, c.corr.addr2, c.corr.city, c.corr.cityd, c.corr.state,
+                     c.corr.zip, c.corr.phone)
+         $dbunlock()
+         if rc != 0 then
+            $brmsg("Error saving contact information!", 1, "W")
+            continue2 = "Y"
+         else
+            continue2 = "N"
+         endif
+      else
+         $dblock()
+         rc = $dbupdateuid(c_corr_uid[1],2, client_id, c.corr.rec, c.corr.rel,
+                       c.corr.fn, c.corr.ln, c.corr.addr1, c.corr.addr2, c.corr.city,c.corr.cityd,
+                       c.corr.state,c.corr.zip,c.corr.phone)
+                       ', c.corr.wph)
+         $dbunlock()
+         if rc > 1 then
+            $brmsg("Error updating Primary Correspondent information!", 1, "W")
+            continue2 = "Y"
+         else
+            continue2 = "N"
+         endif
+      endif
+
+      endif 'err_msg dp
+   endif
+enddo
+goback
+
+'++++++++++++++ FORM 2MIL - MILITARY SERVICE HISTORY +++++++++++++++++++++++++++
+FORM2MIL:
+continue2 = "Y"
+do while continue2 = "Y"
+   $clear(back_btn,b_mil)
+   gosub readMil
+
+   $submitopt("off", "Next")
+   $cancelopt("off", "Quit")
+   $form()
+   $navbutton(back_btn, "Back")
+
+   title = "Military Service History"
+   l_fin:display_header(title,err_msg,client_id)
+
+   T = $fmt(`$maxarray(mil_effd[])`,"LZZZ9 record(s) on file")
+   $text(T)
+
+   $br(2)
+   T = $fmt(`$max(mil_effd[])`,"Most recent Data: MM/DD/YYYY")
+   $text(T)
+
+'Allow appropriate staff to enter new record or correct record entered today
+   if editmode >= 2 then
+      $bstyle("button", "button")
+      $tag("<CENTER>")
+      $submit(b_mil,"Update")
+      $tag("</CENTER>") $br()
+   endif
+
+   $text("{i}Please perform an annual review with the client by clicking the 'Update' button.{/i}")
+
+   if $today < 2/1/2010 then
+      $br(2)
+      $fieldset("News",,"h1")
+      T = "<span class='datatag'>Notice: 12/31/2009</span> - The Military service history has been added"
+      + " to the Financial Assessment in order to easily keep this data up to date."
+      + ""
+      $ctag(T)
+      $endfieldset()
+   endif
+
+   $sendform()
+
+   if $endbutton = "SUBMIT" then
+      goto FORM3
+   elseif $endbutton = "CANCEL" then
+      continue2 = "N"
+   elseif back_btn = "Y" then
+      goto FORM2f
+   elseif b_mil = "Y" then
+      call "MILSERV" (,,client_id)
+      continue2 = "Y"
+   endif
+enddo
+goback
+
+readMil:
+   $clear(mil_rec[],mil_effd[],mil_lname[])
+   rc = $dbReadToArray(2,client_id,c.mil.header,c.mil.lname,
+      mil_rec[],mil_effd[],mil_lname[])
+
+goback
+
+'+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+'++++++++++++++ Display form 3 subroutine ++++++++++++++++++++++++++++++++++++++
+FORM3:
+dowhat = l_finelig:get_elig(client_id, checkedel, editmode)
+if dowhat = "NEXT" then
+   goto FORM3d
+elseif dowhat = "BACK" then
+   goto FORM2MIL
+elseif dowhat = "QUIT" then
+   goback
+endif
+goback
+
+'++++++++++++++ Display responsible party subroutine +++++++++++++++++++++++++++
+FORM3d:
+dowhat = l_finelig:get_rp(client_id, checkedrp, editmode)
+if dowhat = "NEXT" then
+   goto FORM4
+elseif dowhat = "BACK" then
+   goto FORM3
+elseif dowhat = "QUIT" then
+   goback
+endif
+goback
+
+'++++++++++++++ Display form 4 subroutine ++++++++++++++++++++++++++++++++++++++
+FORM4:
+continue = "Y"
+$clear(err_msg)
+do while continue = "Y"
+   $clear(hh_upt_btn[],back_btn, addf4a_btn, del_hh[], add_inc[], edit_inc[],
+         del_inc[])
+   gosub READREC2
+   gosub READHH
+   gosub READHHI
+   if editmode = 1 then
+      goto DISPLAYFORM4a
+   endif
+
+
+   $submitopt("off", "Next")
+   $cancelopt("off", "Quit")
+   $form("form4")
+   $navbutton(back_btn, "Back")
+
+   title = "Household and Income Information"
+   l_fin:display_header(title,err_msg,client_id)
+
+   $tag("<CENTER>") $text("(Members in red are no longer active)","error")
+   $tag("</CENTER>") $br()
+   $tag(hr)
+   $text("Household Information","datatag") $br()
+
+   $style("normal")
+   $bstyle("link", "link")
+
+   $table("f4", ,"width='100%'")
+      $row()
+         $col("left")
+         $col("center") $text("Name","datatag")
+         $col("center") $text("ID","datatag")
+         $col("center") $text("Relationship","datatag")
+         $col("center") $text("Age?","datatag")
+         $col("center") $text("Member Current?","datatag")
+         $col("center") $text("Member a Client?","datatag")
+         $col("center") $text("Client ID","datatag")
+      nextrow = 1
+      counter_4 = 1
+      do while counter_4 <= $maxarray(c_hh_name[])
+         if c_hh_current[counter_4] = "N" then
+            $style("error")
+         else
+            $style("normal")
+         endif
+         if nextrow = 1 then
+            $row(, "bgcolor='FBECDD'")
+            nextrow--
+         else
+            $row()
+            nextrow++
+         endif
+            $col("left")
+            if editmode >= 3 then
+               $submit(del_hh[counter_4], "Del")
+            endif
+            $col("center") $submit(hh_upt_btn[counter_4], c_hh_name[counter_4])
+            $col("center") $text(c_hh_id[counter_4])
+            string = $dct(91, c_hh_relship[counter_4], "D")
+            $col("left") $text(string)
+            string = $dct(9246, c_hh_age[counter_4], "D")
+            $col("center") $text(string)
+            string = $dct(29, c_hh_current[counter_4], "D")
+            $col("center") $text(string)
+            string = $dct(29, c_hh_client[counter_4], "D")
+            $col("center") $text(string)
+            $col("center") $text(c_hh_cid[counter_4])
+            counter_4++
+      enddo
+   $endtable("f4")
+
+'Add a record here
+   if editmode >= 2 then
+      $tag("<CENTER>") $bstyle("button", "button")
+      $submit(addf4a_btn, "Add New")
+      $tag("</CENTER>")
+      $br() $style("error") $tag("<CENTER>")
+      $checkbox(checkedhh, "Household Verified","Y") $tag("</CENTER>") $br()
+      $style("normal")
+   endif
+
+   $bstyle("link", "link")
+   $tag(hr)
+   $text("Income Information","datatag") $br()
+   $table("hh3", ,"width='100%'")
+   counter_4 = 1
+   do while counter_4 <= $maxarray(c_hh_name[])
+         $row(, "bgcolor='DDFFFF'")
+         $col() $text(c_hh_name[counter_4],"error")
+         $submit(add_inc[counter_4], "Add Income")
+         if counter_4 = 1 then
+            $col("left") $text("Amount:", "datatag")
+            $col("left") $text("Doc Date:", "datatag")
+            $col("left") $text("Current:", "datatag")
+         else
+            $col() $col() $col()
+         endif
+
+      b_counter = 1
+      do while b_counter <= $maxarray(c_inc_id[])
+         if c_inc_id[b_counter] = c_hh_id[counter_4] then
+            if c_inc_current[b_counter] = "N" then
+               $style("error")
+            else
+               $style("normal")
+            endif
+            $row(, "bgcolor='FFFFC8'")
+               $col()
+               if editmode = 2 and
+                     c_inc_current[b_counter] = "Y" then
+                  $submit(edit_inc[b_counter], "Edit")
+               elseif editmode >= 3 then
+                  $submit(del_inc[b_counter], "Del")
+                  $submit(edit_inc[b_counter], "Edit")
+               endif
+               $text("Income Type:", "datatag")
+               string = $dct(9045, c_inc_type[b_counter], "D")
+               $text(string)
+               string = $format(c_inc_amnt[b_counter],"$ZZZZZ9.99")
+               $col("left") $text(string)
+               $col("left") $text(c_inc_date[b_counter])
+               $col("left") $text(c_inc_current[b_counter])
+         endif
+         b_counter++
+      enddo
+      counter_4++
+   enddo
+   $endtable("hh3")
+
+   if editmode >= 2 then
+      $style("error") $tag("<CENTER>")
+      $checkbox(checkedinc, "Income Verified","Y") $tag("</CENTER>") $br()
+      $style("normal")
+   endif
+   $br() $tag(hr) $br()
+   %include c_pbutton
+
+   $sendform("form4")
+
+   $clear(err_msg)
+   if $endbutton = "SUBMIT" then
+      goto FORM4d
+   elseif $endbutton = "CANCEL" then
+      continue = "N"
+   elseif back_btn = "Y" then
+      goto FORM3d
+   elseif addf4a_btn = "Y" then  'add new eligibility record
+      updatetype = "A"
+      counter_4a = $maxarray(c_hh_id[])
+      counter_4a++
+      gosub ADDFORM4a
+      continue = "Y"
+   else
+      counter_4a = 1
+      do while counter_4a <= $maxarray(hh_upt_btn[])
+         if hh_upt_btn[counter_4a] = "Y"
+            if editmode >= 2
+               updatetype = "U"
+               gosub UPDATEFORM4a
+               continue = "Y"
+            endif
+         endif
+         counter_4a++
+      enddo
+      counter_4a = 1
+      do while counter_4a <= $maxarray(del_hh[])
+         if del_hh[counter_4a] = "Y"
+            if editmode >= 3
+               if counter_4a = 1 then
+                  err_msg = "Cannot delete client record."
+                  continue = "Y"
+               else
+                  gosub DELETEFORM4a
+                  continue = "Y"
+               endif
+            endif
+         endif
+         counter_4a++
+      enddo
+      counter_4a = 1
+      do while counter_4a <= $maxarray(add_inc[])
+         if add_inc[counter_4a] = "Y"
+            if editmode >= 2
+               updatetype = "A"
+               counter_4b = $maxarray(c_inc_id[])
+               counter_4b++
+               gosub ADDFORM4b
+               continue4 = "Y"
+            endif
+         endif
+         counter_4a++
+      enddo
+
+      counter_4b = 1
+      do while counter_4b <= $maxarray(edit_inc[])
+         if edit_inc[counter_4b] = "Y"
+            updatetype = "U"
+            gosub EDITFORM4b
+         endif
+         counter_4b++
+      enddo
+      counter_4b = 1
+      do while counter_4b <= $maxarray(del_inc[])
+         if del_inc[counter_4b] = "Y"
+            gosub DELETEFORM4b
+         endif
+         counter_4b++
+      enddo
+   endif
+enddo
+goback
+
+
+'++++++++++++++ Update household data subroutine +++++++++++++++++++++++++++++
+DISPLAYFORM4a:
+$clear(err_msg)
+continue2 = "Y"
+do while continue2 = "Y"
+   $clear(back_btn)
+   gosub READHHI
+   $submitopt("off", "Next")
+   $cancelopt("off", "Quit")
+   $form("display4a")
+   $navbutton(back_btn, "Back")
+
+   title = "Household Record"
+   l_fin:display_header(title,err_msg,client_id)
+
+   a_counter = 1
+   do while a_counter <= $maxarray(c_hh_name[])
+      $table("hh2")
+         $row()
+            $col("left") $text("Name","datatag")
+            $col("center") $text("Relationship","datatag")
+            $col("center") $text("Age?","datatag")
+            $col("center") $text("Is Member Current?","datatag")
+            $col("center") $text("Is Member a Client?","datatag")
+            $col("center") $text("Client ID","datatag")
+         $row()
+            $col("center") $text(c_hh_name[a_counter])
+            string = $dct(91, c_hh_relship[a_counter], "D")
+            $col("center") $text(string)
+            string = $dct(9246, c_hh_age[a_counter], "D")
+            $col("center") $text(string)
+            string = $dct(29, c_hh_current[a_counter], "D")
+            $col("center") $text(string)
+            string = $dct(29, c_hh_client[a_counter], "D")
+            $col("center") $text(string)
+            $col("center") $text(c_hh_cid[a_counter])
+
+      $endtable("hh2")
+      $br()
+
+      $br() $tag("<CENTER>")
+      $text("(Income in red is no longer current)","error")
+      $tag("</CENTER>") $br()
+
+      $table("hh3")
+         $row()
+            $col("center") $text("Income Type:", "green")
+            $col("center") $text("Amount:", "green")
+            $col("center") $text("Date Documentation Provided:", "green")
+         b_counter = 1
+         do while b_counter <= $maxarray(c_inc_id[])
+            if c_inc_id[b_counter] = c_hh_id[a_counter] then
+               if c_inc_current[b_counter] = "N" then
+                  $style("error")
+               else
+                  $style("normal")
+               endif
+               $row()
+                  string = $dct(9045, c_inc_type[b_counter], "D")
+                  $col("left") $text(string)
+                  string = $format(c_inc_amnt[b_counter],"$ZZZZZ9.99")
+                  $col("right") $text(string)
+                  $col("left") $text(c_inc_date[b_counter])
+            endif
+            b_counter++
+         enddo
+      a_counter++
+      $endtable("hh3")
+      $br() $tag(hr) $br()
+   enddo
+
+   %include c_pbutton
+   $sendform("display4a")
+
+   if $endbutton = "SUBMIT" then
+      goto FORM4d
+   elseif $endbutton = "CANCEL" then
+      continue2 = "N"
+   elseif back_btn = "Y" then
+      goto FORM3
+   endif
+enddo
+goback
+
+UPDATEFORM4a:
+$clear(err_msg)
+continue4 = "Y"
+do while continue4 = "Y"
+
+   $clear(addf4b_btn, edit_inc[], del_inc[])
+   if err_msg !dp then
+      gosub READHHI
+   endif
+
+   $submitopt("off", "Save")
+   $cancelopt("off", "Quit")
+   $form("update4a")
+
+   title = "Household Record"
+   l_fin:display_header(title,err_msg,client_id)
+
+      $table("hhu")
+         $row()
+            $col("right") $text("Name","datatag")
+            $col("left") $textbox(c_hh_name[counter_4a],,62,32,"Y")
+         $row()
+               $col("right") $text("ID","datatag")
+            $col("left") $text(c_hh_id[counter_4a])
+         $row()
+            $col("right") $text("Relationship","datatag")
+            $col("left") $dropboxdct(c_hh_relship[counter_4a],91,"A","D")
+         $row()
+            $col("right") $text("Age?","datatag")
+            $col("left") $dropboxdct(c_hh_age[counter_4a],9246,"A","D")
+         $row()
+            $col("right") $text("Is Member Current?","datatag")
+            $col("left") $dropboxdct(c_hh_current[counter_4a],29,"A","D")
+         $row()
+            $col("right") $text("Is Member a Client?","datatag")
+            $col("left")
+         sub_counter = 1
+         do while sub_counter <= $maxarray(dct_29_code[])
+            if dct_29_code[sub_counter] = "Y" then
+               $dropbox(c_hh_client[counter_4a], dct_29_desc[sub_counter],
+                      dct_29_code[sub_counter],,,"ISCLIENTU","ISCLIENTU")
+            else
+               $dropbox(c_hh_client[counter_4a], dct_29_desc[sub_counter],
+                      dct_29_code[sub_counter])
+            endif
+            sub_counter++
+         enddo
+      $endtable("hhu")
+
+      $block("ISCLIENTU","ISCLIENTU")
+         $table("ISCLIENTU","width='100%'")
+         $row()
+            $col("right") $text("Client ID:", "datatag")
+            $col("left") $textbox(c_hh_cid[counter_4a],"DB``02",6,10)
+         $endtable("ISCLIENTU")
+      $endblock("ISCLIENTU","ISCLIENTU")
+
+      $br() $tag(hr) $br()
+
+'     $br() $tag("<CENTER>")
+'     $text("(Income in red is no longer current)","error")
+'     $tag("</CENTER>") $br()
+'
+'     $table("hh3")
+'        $row()
+'           $col()
+'           $col("center") $text("Income Type:", "datatag")
+'           $col("center") $text("Amount:", "datatag")
+'           $col("center") $text("Date Documentation Provided:", "datatag")
+'
+'        $bstyle("link", "link")
+'        b_counter = 1
+'        do while b_counter <= $maxarray(c_inc_id[])
+'           if c_inc_id[b_counter] = c_hh_id[counter_4a] then
+'              $row()
+'              if c_inc_current[b_counter] = "N" then
+'                 $style("error")
+'              else
+'                 $style("normal")
+'              endif
+'                 string = $dct(9045, c_inc_type[b_counter], "D")
+'                 $col()
+'                 if editmode = 1 then 'view only
+'                    $col("center") $text(string)
+'                 elseif editmode = 2 and
+'                       c_inc_current[b_counter] = "Y" then
+'                    $col("center") $submit(edit_inc[b_counter], string)
+'                 elseif editmode >= 3 then
+'                    $submit(del_inc[b_counter], "Del")
+'                    $col("center") $submit(edit_inc[b_counter], string)
+'                 endif
+'                 string = $format(c_inc_amnt[b_counter],"$ZZZZZ9.99")
+'                 $col("right") $text(string)
+'                 $col("center") $text(c_inc_date[b_counter])
+'           endif
+'           b_counter++
+'        enddo
+'     $endtable("hh3")
+'
+'     $tag("<CENTER>") $bstyle("button", "button")
+'     $submit(addf4b_btn, "Add New")
+'     $tag("</CENTER>")
+'     $br() $tag(hr) $br()
+
+   $sendform("update4a")
+
+   $clear(err_msg)
+   if $endbutton = "SUBMIT" then
+      gosub UPDATEREC4a
+      continue4 = "N"
+      goback
+   elseif $endbutton = "CANCEL" then
+      continue4 = "N"
+      goback
+'  elseif addf4b_btn = "Y" then  'add new eligibility record
+'     updatetype = "A"
+'     counter_4b = $maxarray(c_inc_id[])
+'     counter_4b++
+'     gosub ADDFORM4b
+'     continue4 = "Y"
+   else
+      counter_4b = 1
+      do while counter_4b <= $maxarray(edit_inc[])
+         if edit_inc[counter_4b] = "Y"
+            updatetype = "U"
+            gosub EDITFORM4b
+         endif
+         counter_4b++
+      enddo
+      counter_4b = 1
+      do while counter_4b <= $maxarray(del_inc[])
+         if del_inc[counter_4b] = "Y"
+            gosub DELETEFORM4b
+         endif
+         counter_4b++
+      enddo
+   endif
+enddo
+goback
+
+ADDFORM4a:
+continue2 = "Y"
+do while continue2 = "Y"
+   $clear(err_msg)
+   $submitopt("off", "Save")
+   $cancelopt("off", "Quit")
+   $form("add4a")
+
+   title = "Add Household Record"
+   l_fin:display_header(title,err_msg,client_id)
+
+   if counter_4a = 1 then
+      c_hh_name[counter_4a] = c.fn + " " + c.mn + " " + c.ln
+      c_hh_relship[counter_4a] =  "01"
+      if current_age < 18 then
+         c_hh_age[counter_4a] = "C"
+      else
+         c_hh_age[counter_4a] = "A"
+      endif
+      c_hh_current[counter_4a] = "Y"
+      c_hh_client[counter_4a] = "N"
+
+      $table("hh2","width='100%'")
+         $row()
+               $col("right") $text("Name","datatag")
+            $col("left") $text(c_hh_name[counter_4a])
+         $row()
+               $col("right") $text("Relationship","datatag")
+            string = $dct(91, c_hh_relship[counter_4a], "D")
+            $col("left") $text(string)
+         $row()
+               $col("right") $text("Age?","datatag")
+            string = $dct(9246, c_hh_age[counter_4a], "D")
+            $col("left") $text(string)
+         $row()
+               $col("right") $text("Is Member Current?","datatag")
+            string = $dct(29, c_hh_current[counter_4a], "D")
+            $col("left") $text(string)
+         $row()
+               $col("right") $text("Is Member a Client?","datatag")
+            string = $dct(29, c_hh_client[counter_4a], "D")
+            $col("left") $text(string)
+      $endtable("hh2")
+   else
+      $table("hh2","width='100%'")
+         $row()
+               $col("right") $text("Name","datatag")
+            $col("left") $textbox(c_hh_name[counter_4a],,64,30,"Y")
+         $row()
+               $col("right") $text("Relationship","datatag")
+            $col("left") $dropboxdct(c_hh_relship[counter_4a],91,"A","D",,"Y")
+         $row()
+               $col("right") $text("Age?","datatag")
+            $col("left") $dropboxdct(c_hh_age[counter_4a],9246,"A","D",,"Y")
+         $row()
+               $col("right") $text("Is Member Current?","datatag")
+            $col("left") $dropboxdct(c_hh_current[counter_4a],29,"A","D",,"Y")
+         $row()
+               $col("right") $text("Is Member a Client?","datatag")
+            $col("left")
+
+            sub_counter = 1
+            do while sub_counter <= $maxarray(dct_29_code[])
+               if dct_29_code[sub_counter] = "Y" then
+                  $dropbox(c_hh_client[counter_4a], dct_29_desc[sub_counter],
+                        dct_29_code[sub_counter],,,"ISCLIENT","ISCLIENT")
+               else
+                  $dropbox(c_hh_client[counter_4a], dct_29_desc[sub_counter],
+                        dct_29_code[sub_counter])
+               endif
+               sub_counter++
+            enddo
+      $endtable("hh2")
+   endif
+
+   $block("ISCLIENT","ISCLIENT")
+      $table("ISCLIENT","width='100%'")
+      $row()
+         $col("right") $text("Client ID:", "datatag")
+         $col("left") $textbox(c_hh_cid[counter_4a],"DB``02",6,10,"Y")
+      $endtable("ISCLIENT")
+   $endblock("ISCLIENT","ISCLIENT")
+
+
+   $br() $tag(hr) $br()
+
+   $sendform("add4a")
+
+   if $endbutton = "SUBMIT" then
+      gosub ADDREC4a
+      continue2 = "N"
+   elseif $endbutton = "CANCEL" then
+      continue2 = "N"
+   endif
+enddo
+goback
+
+'++++++++++++++ Delete household section data subroutine ++++++++++++++++++++++++++++
+DELETEFORM4a:
+   $submitopt("off", "Delete")
+   $cancelopt("off", "Back")
+   $form("delelehh")
+
+   title = "Select Delete to delete household record."
+   l_fin:display_header(title,,client_id)
+
+   $table("delelehh", ,"width='100%'")
+      $row()
+            $col("center") $text("Name","datatag")
+            $col("center") $text("Relationship","datatag")
+            $col("center") $text("Age?","datatag")
+            $col("center") $text("Is Member Current?","datatag")
+            $col("center") $text("Is Member a Client?","datatag")
+            $col("center") $text("Client ID","datatag")
+      $row()
+         $col("center") $text(c_hh_name[counter_4a])
+         string = $dct(91, c_hh_relship[counter_4a], "D")
+         $col("center") $text(string)
+         string = $dct(9246, c_hh_age[counter_4a], "D")
+         $col("center") $text(string)
+         string = $dct(29, c_hh_current[counter_4a], "D")
+         $col("center") $text(string)
+         string = $dct(29, c_hh_client[counter_4a], "D")
+         $col("center") $text(string)
+         $col("center") $text(c_hh_cid[counter_4a])
+   $endtable("delelehh")
+
+   $sendform("delelehh")
+
+   if $endbutton = "SUBMIT" then
+      $dblock()
+      rc = $dbremoveuid(c_hh_uid[counter_4a], 2, client_id, c.hh.rec)
+      if rc > 0 then
+         string = "Error deleting inc rc=" + $format(rc, "ZZZ")
+         $brmsg(string, 1,"W")
+      endif
+   endif
+goback
+
+
+ADDFORM4b:
+continue3 = "Y"
+$clear(err_msg)
+do while continue3 = "Y"
+   $submitopt("off", "Save")
+   $cancelopt("off", "Quit")
+   $form("add4b")
+
+   title = "Add Household Income Record"
+   l_fin:display_header(title,err_msg,client_id)
+    c_inc_id[counter_4b] = c_hh_id[counter_4a]
+
+   string = $dct(91, c_hh_relship[counter_4a], "D")
+   $text("Income for:", "datatag") $text(c_hh_name[counter_4a]) $text(string)
+
+   $table("hhi1")
+      $row()
+         $col() $text("Income Type:", "datatag")
+         $col() $dropboxdct(c_inc_type[counter_4b],9045,"A","D",,"Y")
+      $row()
+         $col() $text("Monthly Amount:", "datatag")
+         $col() $textbox(c_inc_amnt[counter_4b],,,,"Y")
+      $row()
+         $col() $text("Date Documentation Provided:", "datatag")
+         $col() $textbox(c_inc_date[counter_4b], "CAL",10,10)
+   $endtable("hhi1")
+
+   $br() $tag(hr) $br()
+
+   $sendform("add4b")
+
+   $clear(err_msg)
+   if $endbutton = "SUBMIT" then
+'     gosub VALID4b
+      validation = l_fin:validinc(err_msg, c_inc_type[],
+                c_inc_amnt[counter_4b], c_inc_date[counter_4b],
+                c_inc_id[], c_inc_current[], updatetype, counter_4b)
+      if validation = "N" then
+         continue3 = "Y"
+      else
+         gosub ADDREC4b
+         continue3 = "N"
+      endif
+   elseif $endbutton = "CANCEL" then
+      continue3 = "N"
+   endif
+enddo
+goback
+
+'++++++++++++++ Update income section data subroutine +++++++++++++++++++++++++++++
+EDITFORM4b:
+continue4b = "Y"
+$clear(err_msg)
+do while continue4b = "Y"
+
+   $submitopt("off", "Save")
+   $cancelopt("off", "Back")
+   $form("editinc")
+
+   title = "Edit Household Income"
+   l_fin:display_header(title,err_msg,client_id)
+
+   $table("editinc", ,"width='100%'")
+      $row()
+         $col() $text("Income Type:", "datatag")
+         $col() $text("Amount:", "datatag")
+         $col() $text("Date Documentation Provided:", "datatag")
+         $col() $text("Current?:", "datatag")
+      $row()
+         string = $dct(9045, c_inc_type[counter_4b], "D")
+         $col() $text(string)
+         $col() $textbox(c_inc_amnt[counter_4b],,,,"Y")
+         $col() $textbox(c_inc_date[counter_4b], "CAL",10,10)
+         $col() $dropboxdct(c_inc_current[counter_4b],29,"A","D",,"Y")
+
+   $endtable("editinc")
+   $sendform("editinc")
+
+   $clear(err_msg)
+   if $endbutton = "SUBMIT" then
+      validation = l_fin:validinc(err_msg, c_inc_type[],
+                c_inc_amnt[counter_4b], c_inc_date[counter_4b],
+                c_inc_id[], c_inc_current[], updatetype, counter_4b)
+      if validation = "N" then
+         continue4b = "Y"
+      else
+         c.inc.type = c_inc_type[counter_4b]
+         c.inc.amnt = c_inc_amnt[counter_4b]
+         c.inc.date = c_inc_date[counter_4b]
+         c.inc.current = c_inc_current[counter_4b]
+         c.inc.rec[EFFD] = $today
+         $dblock()
+         rc = $dbupdateuid(c_inc_uid[counter_4b], 2, client_id, c.inc.rec,
+                       c.inc.type, c.inc.amnt, c.inc.date,
+                       c.inc.current)
+         continue4b = "N"
+         $dbunlock()
+      endif
+   elseif $endbutton = "CANCEL" then
+      continue4b = "N"
+   endif
+enddo
+goback
+
+'++++++++++++++ Delete income section data subroutine ++++++++++++++++++++++++++++
+DELETEFORM4b:
+   $submitopt("off", "Delete")
+   $cancelopt("off", "Back")
+   $form("deleleinc")
+
+   title = "Select Delete to delete income record."
+   l_fin:display_header(title,,client_id)
+
+   $table("deleleinc", ,"width='100%'")
+      $row()
+         $col() $text("Income Type:", "datatag")
+         $col() $text("Amount:", "datatag")
+         $col() $text("Date Documentation Provided:", "datatag")
+      $row()
+         string = $dct(9045, c_inc_type[counter_4b], "D")
+         $col() $text(string)
+         string = $format(c_inc_amnt[counter_4b],"$ZZZZZ9.99")
+         $col("right") $text(string)
+         $col() $text(c_inc_date[counter_4b])
+   $endtable("deleleinc")
+
+   $sendform("deleleinc")
+
+   if $endbutton = "SUBMIT" then
+      $dblock()
+      rc = $dbremoveuid(c_inc_uid[counter_4b], 2, client_id, c.inc.rec)
+      if rc > 0 then
+         string = "Error deleting inc rc=" + $format(rc, "ZZZ")
+         $brmsg(string, 1,"W")
+      endif
+   endif
+goback
+
+'++++++++++++++ Display form 4c Housing info  subroutine +++++++++++++++++++++++
+FORM4c:
+continue4c = "Y"
+$clear(err_msg)
+do while continue4c = "Y"
+   $clear(back_btn, edit_hou)
+   gosub READREC2
+   gosub READHOUSING
+
+   $submitopt("off", "Next")
+   $cancelopt("off", "Quit")
+   $form("form4c")
+   $navbutton(back_btn, "Back")
+
+   title = "Housing Information"
+   l_fin:display_header(title,,client_id)
+
+   $bstyle("link", "link")
+   $table("f4c", ,"width='100%'")
+      $row()
+         $col("center") $text("Living Arrangements:","datatag")
+         $col("center") $text("Housing:","datatag")
+         $col("center") $text("Section 8:","datatag")
+         $col("center") $text("Sec 8 Waiting List:","datatag")
+      $row()
+         string = $dct(89, c_hou_livarr, "D")
+         $col("center") $text(string) $text(c_hou_livarro)
+         string = $dct(90, c_hou_where, "D")
+         $col("center") $text(string) $text(c_hou_whereo)
+         string = $dct(29, c_hou_sec8, "D")
+         $col("center") $text(string)
+         string = $dct(29, c_hou_sec8w, "D")
+         $col("center") $text(string)
+   $endtable("f4c")
+
+   if editmode >= 2 then
+      $tag("<CENTER>") $bstyle("button", "button")
+      $submit(edit_hou, "Edit")
+      $tag("</CENTER>")
+      $br(2) $style("error") $tag("<CENTER>")
+      $checkbox(checkedhouse, "Housing Verified","Y") $tag("</CENTER>") $br()
+      $style("normal")
+   endif
+
+   $br() $tag(hr) $br()
+   %include c_pbutton
+
+   $sendform("form4c")
+
+   $clear(err_msg)
+   if $endbutton = "CANCEL" then
+      continue4c = "N"
+   elseif back_btn = "Y" then
+      goto FORM4d
+   elseif $endbutton = "SUBMIT" then
+      if editmode > 1 then
+         goto FORM5
+      else
+         continue4c = "N"
+         goback
+      endif
+   elseif edit_hou = "Y" then
+      gosub EDITFORM4c
+   endif
+enddo
+goback
+
+'++++++++++++++ Edit Housing section data subroutine +++++++++++++++++++++++++++
+EDITFORM4c:
+continue4c_1 = "Y"
+if c_hou_sec8w !dp then
+   c_hou_sec8w = "N"
+endif
+$clear(err_msg)
+do while continue4c_1 = "Y"
+   $submitopt("off", "Save")
+   $cancelopt("off", "Back")
+   $form("edithou")
+
+   title = "Edit Housing Information"
+   l_fin:display_header(title,err_msg,client_id)
+
+   $table("edithou1", ,"width='100%'")
+      $row()
+         $col("left") $text("Living Arrangements:", "datatag")
+         sub_counter = 1
+         do while sub_counter <= $maxarray(dct_89_code[])
+            if dct_89_code[sub_counter] = "5" then
+               $dropbox(c_hou_livarr, dct_89_desc[sub_counter],
+                      dct_89_code[sub_counter],,,"OTHERLIV","OTHERLIV")
+            else
+               $dropbox(c_hou_livarr, dct_89_desc[sub_counter],
+                      dct_89_code[sub_counter])
+            endif
+            sub_counter++
+         enddo
+   $endtable("edithou1")
+
+   $block("OTHERLIV","OTHERLIV")
+      $table("OTHERLIV","width='100%'")
+      $row()
+         $col("left") $text("Specify:", "datatag")
+                   $textbox(c_hou_livarro,,32,32,"Y")
+      $endtable("OTHERLIV")
+   $endblock("OTHERLIV","OTHERLIV")
+
+   $table("edithou2", ,"width='100%'")
+      $row()
+         $col("left") $text("Housing:", "datatag")
+         sub_counter = 1
+         do while sub_counter <= $maxarray(dct_90_code[])
+            if dct_90_code[sub_counter] = "6" then
+               $dropbox(c_hou_where, dct_90_desc[sub_counter],
+                      dct_90_code[sub_counter],,,"OTHERHOU","OTHERHOU")
+            else
+               $dropbox(c_hou_where, dct_90_desc[sub_counter],
+                      dct_90_code[sub_counter])
+            endif
+            sub_counter++
+         enddo
+   $endtable("edithou2")
+
+   $block("OTHERHOU","OTHERHOU")
+      $table("OTHERHOU","width='100%'")
+      $row()
+         $col("left") $text("Specify:", "datatag")
+                   $textbox(c_hou_whereo,,32,32,"Y")
+      $endtable("OTHERHOU")
+   $endblock("OTHERHOU","OTHERHOU")
+
+   $table("edithou3", ,"width='100%'")
+      $row()
+         $col("left") $text("Section 8 Housing?:", "datatag")
+         sub_counter = 1
+         do while sub_counter <= $maxarray(dct_29_code[])
+            if dct_29_code[sub_counter] = "N" then
+               $dropbox(c_hou_sec8, dct_29_desc[sub_counter],
+                      dct_29_code[sub_counter],,,"OTHERSEC8","OTHERSEC8")
+            else
+               $dropbox(c_hou_sec8, dct_29_desc[sub_counter],
+                      dct_29_code[sub_counter])
+            endif
+            sub_counter++
+         enddo
+   $endtable("edithou3")
+
+   $block("OTHERSEC8","OTHERSEC8")
+      $table("OTHERSEC8","width='100%'")
+      $row()
+         $col("left") $text("On Section 8 Waiting List?:", "datatag")
+                   $dropboxdct(c_hou_sec8w,29,"A","D",,"Y")
+      $endtable("OTHERSEC8")
+   $endblock("OTHERSEC8","OTHERSEC8")
+
+   $sendform("edithou")
+
+   $clear(err_msg)
+   if $endbutton = "SUBMIT" then
+      gosub EDITREC4c
+   elseif $endbutton = "CANCEL" then
+      continue4c_1 = "N"
+   endif
+enddo
+goback
+
+'+++++++++++++ Display extraordinary expenses section data subroutine ++++++++++
+FORM4d:
+continue4d = "Y"
+$clear(err_msg)
+do while continue4d = "Y"
+   $clear(back_btn, add_exe, del_exe[],edit_exe[])
+   gosub READREC2
+   gosub READEXE
+
+   $submitopt("off", "Next")
+   $cancelopt("off", "Quit")
+   $form("form4d")
+   $navbutton(back_btn, "Back")
+
+   title = "Extraordinary Expenses"
+   l_fin:display_header(title,err_msg,client_id)
+
+   $br() $tag("<CENTER>")
+   $text("(Expenses in red are no longer active)","error")
+   $tag("</CENTER>") $br()
+
+   $style("normal")
+   $bstyle("link", "link")
+
+   $table("f4d", ,"width='100%'")
+      $row()
+         $col("left")
+         $col("center") $text("Type","datatag")
+         $col("center") $text("Start","datatag")
+         $col("center") $text("End","datatag")
+         $col("center") $text("Monthly Amount","datatag")
+         $col("center") $text("Documented","datatag")
+      nextrow = 1
+      counter_4d = 1
+      do while counter_4d <= $maxarray(c_exe_type[])
+         if c_exe_current[counter_4d] = "N" then
+            $style("error")
+         else
+            $style("normal")
+         endif
+         if nextrow = 1 then
+            $row(, rowcolor)
+            nextrow--
+         else
+            $row()
+            nextrow++
+         endif
+            $col("left")
+            if editmode >= 3 then
+               $submit(del_exe[counter_4], "Del")
+            endif
+            string = $dct(9245, c_exe_type[counter_4d], "D")
+            $col("center")
+            if editmode = 1 or c_exe_current[counter_4d] = "N" then
+               $text(string)
+            elseif editmode >= 2 and c_exe_current[counter_4d] = "Y" then
+               $submit(edit_exe[counter_4d], string)
+            endif
+            $text(c_exe_other[counter_4d])
+            $col("center") $text(c_exe_sdate[counter_4d])
+            $col("center") $text(c_exe_edate[counter_4d])
+            $col("center") $text(c_exe_amount[counter_4d])
+            $col("center") $text(c_exe_docdt[counter_4d])
+            counter_4d++
+      enddo
+   $endtable("f4d")
+
+'Add a record here
+   if editmode >= 2 then
+      $tag("<CENTER>") $bstyle("button", "button")
+      $submit(add_exe, "Add New")
+      $tag("</CENTER>")
+      $br(2) $style("error") $tag("<CENTER>")
+      $checkbox(checkedee, "Extraordinary Expenses Verified","Y") $tag("</CENTER>") $br()
+      $style("normal")
+   endif
+
+   $br() $tag(hr) $br()
+   %include c_pbutton
+
+   $sendform("form4d")
+
+   $clear(err_msg)
+   if $endbutton = "SUBMIT" then
+         goto FORM4c
+   elseif $endbutton = "CANCEL" then
+         continue4d = "N"
+   elseif back_btn = "Y" then
+         goto FORM4
+   elseif add_exe = "Y" then
+      updatetype = "A"
+      counter_4d = $maxarray(c_exe_type[])
+      counter_4d++
+      gosub ADDFORM4d
+      continue4d = "Y"
+   else
+      counter_4d = 1
+      do while counter_4d <= $maxarray(edit_exe[])
+         if edit_exe[counter_4d] = "Y"
+            if editmode >= 2
+               updatetype = "U"
+               gosub EDITFORM4d
+               continue4d = "Y"
+            endif
+         endif
+         counter_4d++
+      enddo
+      counter_4d = 1
+      do while counter_4d <= $maxarray(del_exe[])
+         if del_exe[counter_4d] = "Y"
+            if editmode >= 3
+               gosub DELETEFORM4d
+               continue4d = "Y"
+            endif
+         endif
+         counter_4d++
+      enddo
+   endif
+enddo
+goback
+
+ADDFORM4d:
+continue4d_1 = "Y"
+$clear(err_msg)
+do while continue4d_1 = "Y"
+   $submitopt("off", "Save")
+   $cancelopt("off", "Quit")
+   $form("add4d")
+
+   title = "Add Extraordinary Expenses"
+   l_fin:display_header(title,err_msg,client_id)
+
+   $table("exe")
+      $row()
+         $col() $text("Expense Type:", "datatag")
+         $col() $dropboxdct(c_exe_type[counter_4d],9245,"A","D",,"Y")
+      $row()
+         $col() $text("Monthly Amount:", "datatag")
+         $col() $textbox(c_exe_amount[counter_4d],,,,"Y")
+      $row()
+         $col() $text("Start Date:", "datatag")
+         $col() $textbox(c_exe_sdate[counter_4d],"CAL")
+      $row()
+         $col() $text("End Date:", "datatag")
+         $col() $textbox(c_exe_edate[counter_4d],"CAL")
+      $row()
+         $col() $text("Date Documentation Provided:", "datatag")
+         $col() $textbox(c_exe_docdt[counter_4d], "CAL",10,10)
+      $row()
+         $col() $text("Current?:", "datatag")
+         $col() $dropboxdct(c_exe_current[counter_4d],29,"A","D",,"Y")
+
+   $endtable("exe")
+
+   $br() $tag(hr) $br()
+
+   $sendform("add4d")
+
+   $clear(err_msg)
+   if $endbutton = "SUBMIT" then
+      validation = l_fin:valideoe(err_msg, c_exe_type[],
+                c_exe_amount[counter_4d], c_exe_docdt[counter_4d],
+                c_exe_sdate[counter_4d], c_exe_edate[counter_4d],
+                c_exe_current[], updatetype, counter_4d)
+      if validation = "N" then
+         continue4d_1 = "Y"
+      else
+         gosub ADDREC4d
+         continue4d_1 = "N"
+      endif
+   elseif $endbutton = "CANCEL" then
+      continue4d_1 = "N"
+   endif
+enddo
+goback
+
+'++++++++++++++ Update exe section data subroutine +++++++++++++++++++++++++++++
+EDITFORM4d:
+continue4d_1 = "Y"
+$clear(err_msg)
+do while continue4d_1 = "Y"
+
+   $submitopt("off", "Save")
+   $cancelopt("off", "Back")
+   $form("editexe")
+
+   title = "Edit Extraordinary Expenses"
+   l_fin:display_header(title,err_msg,client_id)
+
+   $table("editexe", ,"width='100%'")
+      $row()
+         $col() $text("Expense Type:", "datatag")
+         string = $dct(9245, c_exe_type[counter_4d], "D")
+         $col() $text(string) $text(c_exe_other[counter_4d])
+      $row()
+         $col() $text("Monthly Amount:", "datatag")
+         $col() $textbox(c_exe_amount[counter_4d],,,,"Y")
+      $row()
+         $col() $text("Start Date:", "datatag")
+         $col() $textbox(c_exe_sdate[counter_4d],"CAL")
+      $row()
+         $col() $text("End Date:", "datatag")
+         $col() $textbox(c_exe_edate[counter_4d],"CAL")
+      $row()
+         $col() $text("Date Documentation Provided:", "datatag")
+         $col() $textbox(c_exe_docdt[counter_4d], "CAL",10,10)
+      $row()
+         $col() $text("Current?:", "datatag")
+         $col() $dropboxdct(c_exe_current[counter_4d],29,"A","D",,"Y")
+
+   $endtable("editexe")
+
+   $sendform("editexe")
+
+   $clear(err_msg)
+   if $endbutton = "SUBMIT" then
+      validation = l_fin:valideoe(err_msg, c_exe_type[],
+                c_exe_amount[counter_4d], c_exe_docdt[counter_4d],
+                c_exe_sdate[counter_4d], c_exe_edate[counter_4d],
+                c_exe_current[], updatetype, counter_4d)
+      if validation = "N" then
+         continue4d_1 = "Y"
+      else
+         c.exe.amount = c_exe_amount[counter_4d]
+         c.exe.sdate = c_exe_sdate[counter_4d]
+         c.exe.edate = c_exe_edate[counter_4d]
+         c.exe.docdt = c_exe_docdt[counter_4d]
+         c.exe.current = c_exe_current[counter_4d]
+         c.exe.staff = $operstaffid
+         c.exe.rec[EFFD] = $today
+         $dblock()
+         rc = $dbupdateuid(c_exe_uid[counter_4d], 2, client_id, c.exe.rec,
+                       c.exe.amount, c.exe.sdate, c.exe.edate,
+                       c.exe.docdt, c.exe.current, c.exe.staff)
+         continue4d_1 = "N"
+         $dbunlock()
+      endif
+   elseif $endbutton = "CANCEL" then
+      continue4d_1 = "N"
+   endif
+enddo
+goback
+
+'++++++++++++++ Delete exe section data subroutine ++++++++++++++++++++++++++++
+DELETEFORM4d:
+   $submitopt("off", "Delete")
+   $cancelopt("off", "Back")
+   $form("deleleexe")
+
+   title = "Select Delete to delete extraordinary expenses record."
+   l_fin:display_header(title,,client_id)
+
+   $table("deleleexe", ,"width='100%'")
+      $row()
+         $col() $text("Expenses Type:", "datatag")
+         $col() $text("Amount:", "datatag")
+         $col() $text("Start Date:", "datatag")
+         $col() $text("Current:", "datatag")
+      $row()
+         string = $dct(9245, c_exe_type[counter_4d], "D")
+         $col() $text(string) $text(c_exe_other[counter_4d])
+         string = $format(c_exe_amount[counter_4d],"$ZZZZZ9.99")
+         $col("right") $text(string)
+         $col() $text(c_exe_sdate[counter_4d])
+         string = $dct(29, c_exe_current[counter_4d], "D")
+         $col() $text(string)
+   $endtable("deleleexe")
+
+   $sendform("deleleexe")
+
+   if $endbutton = "SUBMIT" then
+      $dblock()
+      rc = $dbremoveuid(c_exe_uid[counter_4d], 2, client_id, c.exe.rec)
+      if rc > 0 then
+         string = "Error deleting inc rc=" + $format(rc, "ZZZ")
+         $brmsg(string, 1,"W")
+      endif
+   endif
+goback
+
+
+FORM5:
+   income_unearned = 0.0
+   calculated_mmf = l_fin:calc_mmf(client_id, income_unearned,
+                income_earned, expenses_extra, family_size,income_total,
+                income_adjusted, refer_chip, refer_ssi)
+   if override_mmf !dp then
+      override_mmf = "N"
+   endif
+   if override_stdfee !dp then
+      override_stdfee = "N"
+   endif
+
+   $clear(back_btn)
+   $submitopt("off", "Save")
+   $cancelopt("off", "Quit")
+   $form("calcmmf")
+   $navbutton(back_btn, "Back")
+
+   title = "New Calculated MMF."
+   l_fin:display_header(title,,client_id)
+
+   $table("calcmmf", ,"width='100%'")
+      $row(, rowcolor)
+         $col("right",,"%50") $text("Unearned Income:", "datatag")
+         $col("left",,"50%")  $text(income_unearned)
+      $row()
+         $col("right",,"%50") $text("Earned Income:", "datatag")
+         $col("left",,"%50")  $text(income_earned)
+      $row(, rowcolor)
+         $col("right",,"%50") $text("Total Monthly Income:", "datatag")
+         $col("left",,"%50")  $text(income_total)
+      $row()
+         $col("right",,"%50") $text("Extraordinary Expenses:", "datatag")
+         $col("left",,"%50")  $text(expenses_extra)
+      $row(, rowcolor)
+         $col("right",,"%50") $text("Total Monthly Adjusted Gross Income:", "datatag")
+         $col("left",,"%50")  $text(income_adjusted,"datatag")
+      $row()
+         $col("right",,"%50") $text("____________________________________", "datatag")
+         $col("left",,"%50")  $text("__________________")
+      $row()
+         $col("right",,"%50") $text("Number of Family Members:", "datatag")
+         $col("left",,"%50")  $text(family_size)
+      $row(, rowcolor)
+         $col("right",,"%50") $text("Maximum Monthly Fee:", "error")
+         $col("left",,"%50")  $text(calculated_mmf)
+      $row()
+         $col("right",,"%50") $text("Chip Referral:", "datatag")
+         string = $dct(29, refer_chip, "D") $col("left",,"%50")
+         if refer_chip = "Y" then
+            $text(string,"error")
+         else
+            $text(string,)
+         endif
+      $row(, rowcolor)
+         $col("right",,"%50") $text("SSI Referral:", "datatag")
+         string = $dct(29, refer_ssi, "D") $col("left",,"%50")
+         if refer_ssi = "Y" then
+            $text(string,"error")
+         else
+            $text(string,)
+         endif
+      $row()
+         $col("right",,"%50") $text("MMF Comment:", "datatag")
+         $col("left",,"%50")  $textblock(mmf_comment, 4, 64, , , 256)
+                         $countbox(mmf_comment, "(max chars is 256)")
+
+   $endtable("calcmmf")
+   $br() $tag(hr) $br()
+
+   $table("ovmmf", ,"width='100%'")
+      $row()
+         $col("left") $text("Override Maxiumum Monthly Fee?", "datatag")
+                     $radio(override_mmf, "Yes", "Y",,,"OVRMMF","OVRMMF")
+                     $radio(override_mmf, "No", "N")
+   $endtable("ovmmf")
+
+   $block("OVRMMF","OVRMMF")
+      $table("OVRMMF","width='100%'")
+      $row()
+         $col("left",,"%10")
+         $col("left") $text("Reason For Overriding MMF:", "datatag")
+                    $dropboxdct(override_reason,153,"A","D",,"Y")
+      $row()
+         $col("left",,"%10")
+         $col("left") $text("Enter New MMF:", "datatag")
+                    $textbox(calculated_mmf)
+      $endtable("OVRMMF")
+   $endblock("OVRMMF","OVRMMF")
+
+   $table("ovstd", ,"width='100%'")
+      $row()
+         $col("left") $text("Client to Pay 100 of standard fee?", "datatag")
+                     $radio(override_stdfee, "Yes", "Y",,,"OVRSTD","OVRSTD")
+                     $radio(override_stdfee, "No", "N")
+   $endtable("ovstd")
+
+   $block("OVRSTD","OVRSTD")
+      $table("OVRSTD","width='100%'")
+      $row()
+         $col("left",,"%10")
+         $col("left") $text("Reason:", "datatag")
+                   $dropboxdct(override_stdwhy,92,"A","D",,"Y")
+      $row()
+         $col("left",,"%10")
+         $col("left") $text("100 Percent affects:", "datatag")
+                   $dropboxdct(override_stdsvc,93,"A","D",,"Y")
+      $endtable("OVRSTD")
+   $endblock("OVRSTD","OVRSTD")
+
+   $sendform("calcmmf")
+
+   if $endbutton = "SUBMIT" then
+      rtrncode = l_fin:checked(checkedname, checkeddemo,
+               checkedphaddr, checkedmladdr,checkedguard, checkedel,
+               checkedrp, checkedhh, checkedinc, checkedee, checkedhouse,
+               c_hou_livarr, c_hh_name[])
+      if editmode = 4 then
+         rtrncode = 0
+      endif
+      gosub CHECKNEW
+      if createnew = "Y" and rtrncode = 0 then
+         gosub ADDREC5
+         call "FINRPT" (client_id, "C", rtrncode)
+'        call "CAMENTRY" ($today,"NNBED",client_id,rtrncode)
+         goback
+      elseif createnew = "N" and rtrncode = 0 then
+         gosub UPDATEREC5
+         call "FINRPT" (client_id, "U", rtrncode)
+'        call "CAMENTRY" ($today,"NNBED",client_id,rtrncode)
+         goback
+      else
+         goto FORM5
+      endif
+   elseif $endbutton = "CANCEL" then
+      goback
+   elseif back_btn = "Y" then
+      goto FORM4
+   endif
+goback
+
+'++++++++++++++ Update name section dst's subroutine ++++++++++++++++++++++++++
+UPDATEREC2a:
+   $dblock()
+   rc = $dbread(2, client_id, c.ln, c.fn, c.mn, c.suffix, c.maiden,
+               c.clt.nm.notes)
+   if rc > 1 then
+         $brmsg("There was an error in reading client record.", 1, "C")
+         string = "script:" + $scriptid + " Line:" + $sourceline +
+                "rc:" + $format(rc, "ZZZ")
+         $brmsg(string, 2, "W", "ERROR")
+         return
+   endif
+
+   if c.ln != c_ln then
+      c.ln = c_ln
+      c.ln[EFFD] = $today
+   endif
+
+   if c.fn != c_fn then
+      c.fn = c_fn
+      c.fn[EFFD] = $today
+   endif
+
+   $clear(c.mn)
+   if c_mn dp then
+      c.mn = c_mn
+   endif
+
+   $clear(c.suffix)
+   if c_suffix dp then
+      c.suffix = c_suffix
+   endif
+
+   $clear(c.maiden)
+   if c_maiden dp then
+      c.maiden = c_maiden
+   endif
+
+   $clear(c.clt.nm.notes)
+   if c_clt_nm_notes dp then
+      c.clt.nm.notes = c_clt_nm_notes
+   endif
+
+   $dbalpha = c.ln + " " + c.fn + " " + c.mn
+   rc = $dbupdate(2, client_id, c.ln, c.fn, c.mn, c.suffix, c.maiden,
+                 c.clt.nm.notes)
+   if rc > 1 then
+         $brmsg("There was an error in updating client record.", 1, "C")
+         string = "script:" + $scriptid + " Line:" + $sourceline +
+                "rc:" + $format(rc, "ZZZ")
+         $brmsg(string, 2, "W", "ERROR")
+         return
+   endif
+   $dbunlock()
+goback
+
+'++++++++++++++ Update demographics section dst's subroutine ++++++++++++++++++
+UPDATEREC2b:
+   $dblock()
+   rc = $dbread(2, client_id, c.ssn, c.sex, c.race, c.mar, c.empl, c.bd,
+               c.age.y)
+   if rc > 2 then
+         $brmsg("There was an error in reading client record.", 1, "C")
+         string = "script:" + $scriptid + " Line:" + $sourceline +
+                "rc:" + $format(rc, "ZZZ")
+         $brmsg(string, 2, "W", "ERROR")
+         return
+   endif
+
+   rc = $datediff(c.bd, $today, c_age_y)
+   c_ssn = l_fin:numberstr(c_ssn)
+   c_ssn = $left(c_ssn, 3) + "-" + $seg(c_ssn, 4, 2) + "-" + $right(c_ssn, 4)
+
+   if c.bd != c_bd then
+      c.bd = c_bd
+      c.bd[EFFD] = $today
+   endif
+
+   if c.age.y != c_age_y then
+      c.age.y = c_age_y
+      c.age.y[EFFD] = $today
+   endif
+
+   if c.ssn != c_ssn then
+      c.ssn = c_ssn
+      c.ssn[EFFD] = $today
+   endif
+
+   if c.sex != c_sex then
+      c.sex = c_sex
+      c.sex[EFFD] = $today
+   endif
+
+   if c.race != c_race then
+      c.race = c_race
+      c.race[EFFD] = $today
+   endif
+
+   if c.mar != c_mar then
+      c.mar = c_mar
+      c.mar[EFFD] = $today
+   endif
+
+   if c.empl != c_empl then
+      c.empl = c_empl
+      c.empl[EFFD] = $today
+   endif
+
+   rc = $dbupdate(2, client_id, c.ssn, c.sex, c.race, c.mar, c.empl,
+                 c.bd, c.age.y)
+   $dbunlock()
+goback
+
+'++++++++++++++ Update household record subroutine +++++++++++++++++++++++++++
+UPDATEREC4a:
+
+   if c_hh_client[counter_4a] = "Y" then
+      c_hh_name[counter_4a] = l_fin:getcname(c_hh_cid[counter_4a])
+   else
+      c_hh_name[counter_4a] = $uc(c_hh_name[counter_4a])
+   endif
+
+'  $dblock()
+'  rc = $dbreaduid(c_hh_uid[counter_4a], 02, client_id, c.hh.rec)
+
+   c.hh.client = c_hh_client[counter_4a]
+   if c_hh_client[counter_4a] = "Y" then
+      c.hh.cid = c_hh_cid[counter_4a]
+   else
+      $clear(c.hh.cid)
+   endif
+   c.hh.name = c_hh_name[counter_4a]
+   c.hh.id = c_hh_id[counter_4a]
+   c.hh.relship = c_hh_relship[counter_4a]
+   c.hh.age = c_hh_age[counter_4a]
+   c.hh.current = c_hh_current[counter_4a]
+   c.hh.staff = $operstaffid
+   c.hh.rec[EFFD] = $today
+
+   $dblock()
+   rc = $dbupdateuid(c_hh_uid[counter_4a], 02, client_id, c.hh.rec,
+                  c.hh.name, c.hh.id, c.hh.relship, c.hh.age,
+                  c.hh.current, c.hh.staff, c.hh.client, c.hh.cid)
+
+   if rc != 0 then
+      $brmsg("There was an error in updating household record.", 1, "C")
+      string = "script:" + $scriptid + " Line:" + $sourceline +
+             "rc:" + $format(rc, "ZZZ")
+      $brmsg(string, 2, "W", "ERROR")
+      continue4 = "Y"
+   else
+      continue4 = "N"
+   endif
+goback
+
+'++++++++++++++ Add household record subroutine +++++++++++++++++++++++++++
+ADDREC4a:
+   if c_hh_client[counter_4a] = "Y" then
+      c_hh_name[counter_4a] = l_fin:getcname(c_hh_cid[counter_4a])
+   else
+      c_hh_name[counter_4a] = $uc(c_hh_name[counter_4a])
+   endif
+
+   $dblock()
+   rc = $dbread(02, client_id, c.hh.rec)
+
+   c.hh.client = c_hh_client[counter_4a]
+   if c_hh_client[counter_4a] = "Y" then
+      c.hh.cid = c_hh_cid[counter_4a]
+   else
+      $clear(c.hh.cid)
+   endif
+   c.hh.name = c_hh_name[counter_4a]
+   c.hh.id = counter_4a
+   c.hh.relship = c_hh_relship[counter_4a]
+   c.hh.age = c_hh_age[counter_4a]
+   c.hh.current = c_hh_current[counter_4a]
+   c.hh.staff = $operstaffid
+   c.hh.rec[EFFD] = $today
+
+   rc = $dbadddst(02, client_id, c.hh.rec, c.hh.name, c.hh.id, c.hh.relship,
+                  c.hh.age, c.hh.current, c.hh.staff, c.hh.client,
+                  c.hh.cid)
+
+   $dbunlock()
+   if rc != 0 then
+      $brmsg("There was an error in adding household record.", 1, "C")
+      string = "script:" + $scriptid + " Line:" + $sourceline +
+             "rc:" + $format(rc, "ZZZ")
+      $brmsg(string, 2, "W", "ERROR")
+      continue2 = "Y"
+   else
+      continue2 = "N"
+   endif
+goback
+
+
+'++++++++++++++ Add household income record subroutine +++++++++++++++++++++++++
+ADDREC4b:
+   $dblock()
+   rc = $dbread(02, client_id, c.inc.rec)
+
+   c.inc.id = c_inc_id[counter_4b]
+   c.inc.type = c_inc_type[counter_4b]
+   c.inc.amnt = c_inc_amnt[counter_4b]
+   c.inc.date = c_inc_date[counter_4b]
+   c.inc.current = "Y"
+
+   c.inc.staff = $operstaffid
+   c.inc.rec[EFFD] = $today
+
+   rc = $dbadddst(02, client_id, c.inc.rec, c.inc.id, c.inc.type, c.inc.amnt,
+                  c.inc.date, c.inc.staff, c.inc.current)
+
+   $dbunlock()
+   if rc != 0 then
+      $brmsg("There was an error in adding household income record.", 1, "C")
+      string = "script:" + $scriptid + " Line:" + $sourceline +
+             "rc:" + $format(rc, "ZZZ")
+      $brmsg(string, 2, "W", "ERROR")
+      continue3 = "Y"
+   else
+      continue3 = "N"
+   endif
+goback
+
+'++++++++++++++ Add extraordinary expenses record subroutine +++++++++++++++++++
+ADDREC4d:
+   $dblock()
+   rc = $dbread(02, client_id, c.exe.rec)
+
+   c.exe.type = c_exe_type[counter_4d]
+   c.exe.sdate = c_exe_sdate[counter_4d]
+   c.exe.edate = c_exe_edate[counter_4d]
+   c.exe.amount = c_exe_amount[counter_4d]
+   c.exe.docdt = c_exe_docdt[counter_4d]
+   c.exe.other = c_exe_other[counter_4d]
+   c.exe.current = c_exe_current[counter_4d]
+   c.exe.staff = $operstaffid
+   c.exe.rec[EFFD] = $today
+
+   rc = $dbadddst(02, client_id, c.exe.rec, c.exe.type, c.exe.sdate,
+               c.exe.edate, c.exe.amount, c.exe.docdt, c.exe.other,
+               c.exe.current, c.exe.staff)
+
+   $dbunlock()
+   if rc != 0 then
+      $brmsg("There was an error in adding household income record.", 1, "C")
+      string = "script:" + $scriptid + " Line:" + $sourceline +
+             "rc:" + $format(rc, "ZZZ")
+      $brmsg(string, 2, "W", "ERROR")
+      continue4d_1 = "Y"
+   else
+      continue4d_1 = "N"
+   endif
+goback
+
+'++++++++++++++ Add mmf subroutine +++++++++++++++++++++++++++
+ADDREC5:
+   $dblock()
+   rc = $dbread(02, client_id, c.bd, c.age.y)
+   rc = $datediff(c.bd, $today, c.age.y)
+   rc = $dbupdate(2, client_id, c.age.y)
+
+   $dblock()
+   'rc = $dbread(02, client_id, $$pp.rec, $$pp.eff)
+
+   rc = $dbread(2, client_id, $$pp.rec, pp.staff, $$pp.eff, $$pp.lap,
+      pp.tmnuinc, pp.tmnginc, pp.tmi, pp.tmnexin, pp.tadginc,
+      pp.ovrrsn, pp.100std, pp.100why, pp.100svcs,
+      $$pp.d.lia, pp.mmftot, pp.comment,pp.chipref,pp.ssdimdf)
+
+   if $$pp.eff = $today then
+      updatetype = "U"
+   endif
+
+   if updatetype != "U" then
+      ' * record add - check if we need to modify the previous record
+      if $$pp.lap >= $today then
+         $$pp.lap = $today - 1
+         rc = $dbupdate(2, client_id, $$pp.rec, $$pp.lap)
+
+         '* lock and re-read for below update
+         '* can probably be done better, but this will do for now
+         $dblock()
+         rc = $dbread(2, client_id, $$pp.rec, pp.staff, $$pp.eff, $$pp.lap,
+            pp.tmnuinc, pp.tmnginc, pp.tmi, pp.tmnexin, pp.tadginc,
+            pp.ovrrsn, pp.100std, pp.100why, pp.100svcs,
+            $$pp.d.lia, pp.mmftot, pp.comment,pp.chipref,pp.ssdimdf)
+      endif
+   endif
+
+   pp.staff       = $operstaffid
+   $$pp.eff       = $today
+   $$pp.lap       = $today + 365
+
+   pp.tmnuinc     = income_unearned
+   pp.tmnginc     = income_earned
+   pp.tmi         = income_total
+   pp.tmnexin     = expenses_extra
+   pp.tadginc     = income_adjusted
+
+   pp.ovrrsn      = override_reason
+   pp.100std      = override_stdfee
+   pp.100why      = override_stdwhy
+   pp.100svcs     = override_stdsvc
+
+   $$pp.d.lia     = calculated_mmf
+   pp.mmftot      = family_size
+   pp.comment     = mmf_comment
+   pp.chipref     = refer_chip
+   pp.ssdimdf     = refer_ssi
+   $$pp.rec[EFFD] = $today
+
+   if updatetype = "U" then
+      rc = $dbupdate(02, client_id, $$pp.rec, pp.staff, $$pp.eff, $$pp.lap,
+                     pp.tmnuinc, pp.tmnginc, pp.tmi, pp.tmnexin, pp.tadginc,
+                     pp.ovrrsn, pp.100std, pp.100why, pp.100svcs,
+                     $$pp.d.lia, pp.mmftot, pp.comment,pp.chipref,pp.ssdimdf)
+   else
+      rc = $dbadddst(02, client_id, $$pp.rec, pp.staff, $$pp.eff, $$pp.lap,
+                     pp.tmnuinc, pp.tmnginc, pp.tmi, pp.tmnexin, pp.tadginc,
+                     pp.ovrrsn, pp.100std, pp.100why, pp.100svcs,
+                   $$pp.d.lia, pp.mmftot, pp.comment,pp.chipref,pp.ssdimdf)
+   endif
+   $dbunlock()
+   if rc != 0 then
+      $brmsg("There was an error in adding household record.", 1, "C")
+      string = "script:" + $scriptid + " Line:" + $sourceline +
+             "rc:" + $format(rc, "ZZZ")
+      $brmsg(string, 2, "W", "ERROR")
+   endif
+goback
+
+UPDATEREC5:
+   $dblock()
+   rc = $dbread(02, client_id, $$pp.rec, pp.staffu, pp.uptdt)
+   pp.staffu = $operstaffid
+   pp.uptdt = $today
+   rc = $dbupdate(02, client_id, $$pp.rec, pp.staffu, pp.uptdt)
+goback
+
+
+'++++++++++++++ Add housing income record subroutine +++++++++++++++++++++++++
+EDITREC4c:
+   $dblock()
+   rc = $dbread(02, client_id, c.hou.rec)
+
+   c.hou.livarr = c_hou_livarr
+   if c.hou.livarr < "5" then
+      $clear(c.hou.livarro)
+   else
+      c.hou.livarro = c_hou_livarro
+   endif
+
+   c.hou.where = c_hou_where
+   if c.hou.where < "6" then
+      $clear(c.hou.whereo)
+   else
+      c.hou.whereo = c_hou_whereo
+   endif
+
+   c.hou.sec8 = c_hou_sec8
+   if c.hou.sec8 = "N" then
+      $clear(c.hou.sec8w)
+   else
+      c.hou.sec8w = c_hou_sec8w
+   endif
+   c.hou.edate = $today
+   c.hou.staff = $operstaffid
+   c.hou.rec[EFFD] = $today
+
+   rc = $dbupdate(02, client_id, c.hou.rec, c.hou.livarr, c.hou.livarro,
+                  c.hou.where, c.hou.whereo, c.hou.sec8, c.hou.sec8w)
+
+   $dbunlock()
+   if rc != 0 then
+      $brmsg("There was an error in adding household income record.", 1, "C")
+      string = "script:" + $scriptid + " Line:" + $sourceline +
+             "rc:" + $format(rc, "ZZZ")
+      $brmsg(string, 2, "W", "ERROR")
+      continue4c_1 = "Y"
+   else
+      continue4c_1 = "N"
+   endif
+goback
+
+'++++++++++++++ CHECK TO SEE IF AKA NEEDS TO BE ADDED ++++++++++++++++++++++++++
+UPDATEAKA:
+   $clear(akafound)
+   if (p_ln = c_ln) and (p_fn = c_fn) and (p_mn = c_mn) and
+      (p_suffix = c_suffix) then
+      goto ENDUPDATEAKA
+   endif
+
+   rec_counter = 1
+   do while rec_counter <= $maxarray(c_aka_lname[])
+      if (p_ln = c_aka_lname[rec_counter]) and
+         (p_fn = c_aka_fname[rec_counter]) and
+         (p_mn = c_aka_mname[rec_counter]) and
+         (p_suffix = c_aka_suffix[rec_counter]) then
+            goto ENDUPDATEAKA
+      endif
+      rec_counter++
+   enddo
+   rec_counter++
+
+   c_aka_lname[rec_counter] = p_ln
+   c_aka_fname[rec_counter] = p_fn
+   c_aka_mname[rec_counter] = p_mn
+   c_aka_suffix[rec_counter] = p_suffix
+   rtrncode = l_fin:validaka(c_aka_lname[], c_aka_fname[],
+            c_aka_mname[], c_aka_suffix[], c_ln, c_fn, c_mn, c_suffix,
+            rec_counter)
+
+   if rtrncode = 0 then
+      c.aka.lname = c_aka_lname[rec_counter]
+      c.aka.fname = c_aka_fname[rec_counter]
+      c.aka.mname = c_aka_mname[rec_counter]
+      c.aka.suffix = c_aka_suffix[rec_counter]
+      $dblock()
+      rc = $dbadddst(2, client_id, c.aka.rec, c.aka.lname, c.aka.fname,
+                     c.aka.mname, c.aka.suffix)
+      $dbunlock()
+   endif
+ENDUPDATEAKA:
+goback
+
+CHECKNEW:
+   createnew = "N"
+   rc = $dbread(02, client_id, $$pp.rec, $$pp.eff, $$pp.lap)
+   datediff = $today - $$pp.eff
+   if datediff > CN_ExpThresh then
+      createnew = "Y"
+      goback
+   endif
+   
+   '*new financial if already lapsed or within X days (90: see CN_FinThresh)
+   if $$pp.lap < $today then
+      $brmsg("Previous Financial Assessment has lapsed.  Creating a new one.",1,"CW")
+      createnew = "Y"
+      goback
+   else
+      datediff = $$pp.lap - $today
+      'if $operfal = "9999" then
+      '   $brmsg($fmt(datediff,$$pp.lap,"DEBUG: datediff=999 LAPSE=MM/DD/YY"),1,"CW")
+      'endif
+      if datediff <= CN_FinThresh then
+         T = $fmt(datediff,$$pp.lap,"Current Financial will lapse on MM/DD/YY (ZZ9 days).  A new financial will be created.")
+         $brmsg(T,1,"CW")
+         createnew = "Y"
+         goback
+      endif
+   endif
+
+   gosub readrec2
+   if c.ln[EFFD] > $$pp.eff or c.ln[EFFD] = $today then
+      createnew = "Y"
+      goback
+   elseif c.fn[EFFD] > $$pp.eff or c.fn[EFFD] = $today then
+      createnew = "Y"
+      goback
+   elseif c.mn[EFFD] > $$pp.eff or c.mn[EFFD] = $today then
+      createnew = "Y"
+      goback
+   elseif c.suffix[EFFD] > $$pp.eff or c.suffix[EFFD] = $today then
+      createnew = "Y"
+      goback
+   elseif c.ssn[EFFD] > $$pp.eff or c.ssn[EFFD] = $today then
+      createnew = "Y"
+      goback
+   elseif c.sex[EFFD] > $$pp.eff or c.sex[EFFD] = $today then
+      createnew = "Y"
+      goback
+   elseif c.race[EFFD] > $$pp.eff or c.race[EFFD] = $today then
+      createnew = "Y"
+      goback
+   elseif c.mar[EFFD] > $$pp.eff or c.mar[EFFD] = $today then
+      createnew = "Y"
+      goback
+   elseif c.empl[EFFD] > $$pp.eff or c.empl[EFFD] = $today then
+      createnew = "Y"
+      goback
+   elseif c.maiden[EFFD] > $$pp.eff or c.maiden[EFFD] = $today then
+      createnew = "Y"
+      goback
+   elseif c.bd[EFFD] > $$pp.eff or c.bd[EFFD] = $today then
+      createnew = "Y"
+      goback
+   endif
+
+   'check eligibility
+   rc = $dbread(2, client_id, c.el, c.el.fs)
+   do while rc < 2
+      if c.el[EFFD] > $$pp.eff or c.el[EFFD] = $today then
+         createnew = "Y"
+         goback
+      endif
+      rc = $dbreadnextdst(02, client_id, c.el, c.el.fs)
+   enddo
+
+   'check physical address record
+   i = 0
+   do while i++ < $maxarray(c_ad_effd[])
+      if c_ad_effd[i] > $$pp.eff or c_ad_effd[i] = $today then
+         createnew = "Y"
+         goback
+      endif
+   enddo
+
+   'check mailing address record
+   i = 0
+   do while i++ < $maxarray(c_ml_effd[])
+      if c_ml_effd[i] > $$pp.eff or c_ml_effd[i] = $today then
+         createnew = "Y"
+         goback
+      endif
+   enddo
+
+   'check client contact record
+   i = 0
+   do while i++ < $maxarray(c_cc_effd[])
+      if c_cc_effd[i] > $$pp.eff or c_cc_effd[i] = $today then
+         createnew = "Y"
+         goback
+      endif
+   enddo
+
+   'check household record
+   i = 0
+   do while i++ < $maxarray(c_hh_effd[])
+      if c_hh_effd[i] > $$pp.eff or c_hh_effd[i] = $today then
+         createnew = "Y"
+         goback
+      endif
+   enddo
+
+   'check income record
+   i = 0
+   do while i++ < $maxarray(c_inc_effd[])
+      if c_inc_effd[i] > $$pp.eff or c_inc_effd[i] = $today then
+         createnew = "Y"
+         goback
+      endif
+   enddo
+
+   'check extraordinary record
+   i = 0
+   do while i++ < $maxarray(c_exe_effd[])
+      if c_exe_effd[i] > $$pp.eff or c_exe_effd[i] = $today then
+         createnew = "Y"
+         goback
+      endif
+   enddo
+
+   'check housing record
+   if c_hou_effd > $$pp.eff or c_hou_effd = $today then
+      createnew = "Y"
+      goback
+   endif
+
+goback
+
+end FINASSMT

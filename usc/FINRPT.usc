@@ -1,0 +1,1479 @@
+'Financial Report Main Program
+'AUTHOR: Bobby Dorris
+'DATE: 06/16/2006
+'*******************************************************************************
+'RLE 20100901 .001
+'  + Added frm_WarnExit form for when they click quit before creating the snapshot
+'  + Added logging of snap creation and what they do in frm_WarnExit
+'RLE 20120831 .002
+'  + add logic to ensure a client ID is present and prompt user if not
+'RLE 20121029 .003
+'  - per donna removed the Medicaid screening text from the update snapshot
+
+%version 01.0.003 10/29/12 GCC
+
+%maptest
+%allow_nonmapped_io
+
+%desc Displays the client financial information
+
+start FINRPT(client_id,report_type,rtrncode)
+client_id		is alpha
+
+%include gcc_groups
+%include c_cldefLL
+if client_id !dp and $regid dp then
+   client_id = $regid
+endif
+
+if client_id !dp then
+   if "lib_CLIENT":pickClient(client_id) > 0 then
+      goback
+   endif
+endif
+
+if client_id dp then
+   $regid = client_id
+   client = client_id
+   CID    = client_id
+endif
+
+
+Title = "Financial Assessent"
+ReportID = "GCCFINA"
+RptTitle = "Financial Assessent"
+
+'SET THE SYSTEM library handle values
+dd_handle	   = "l_dataLib"
+draft_handle	= "l_draftLib"
+dsum_handle	   = "l_dsumLib"
+general_handle	= "l_genLib"
+inote_handle	= "l_inoteLib"
+obj_handle	   = "l_objLib"
+report_handle	= "l_reportLib"
+snap_handle	   = "l_snapLib"
+staff_handle	= "l_staffLib"
+std_handle	   = "l_stdLib"
+client_handle  = "l_clientLib"
+'snaplibmain    = "l_snapLibMain"
+
+snapID              is x    ' Document ID; register in database 13 
+
+'**********************VARIABLE DELCARATIONS************************************
+report_type		is alpha
+rtrncode		is binary
+
+'DSTs not within a record					
+'c.ln			is alpha
+'c.fn			is alpha
+'c.mn			is alpha
+
+c_ln			is alpha	p_ln			is alpha	'last name
+c_fn			is alpha	p_fn			is alpha	'first name
+c_mn			is alpha	p_mn			is alpha	'middle name
+c.suffix		is alpha	c_suffix		is alpha	'suffix
+							p_suffix		is alpha	'suffix
+
+'c.ssn			is alpha
+c_ssn			is alpha	'social security 
+'c.sex			is alpha
+c_sex			is alpha	'sex
+'c.race			is alpha
+c_race			is alpha	'ethnic code
+'c.bd			is date
+c_bd			is date		'birth date
+
+c.mar			is alpha	c_mar			is alpha	'marital status
+c.empl			is alpha	c_empl			is alpha	'employment status
+c.maiden		is alpha	c_maiden		is alpha	'maiden name
+c.intake		is alpha	c_intake		is alpha	'print intake form?
+c.age.y			is binary	c_age_y			is binary	'client age in years
+
+c.clt.nm.notes	is alpha	c_clt_nm_notes 	is alpha	'client name notes
+					
+'client eligibility record 1					
+c.el			is header	c_el_uid[]		is numeric	'client eligibility rec
+c_el_effd[]		is date		c_el_current[]	is alpha	'effective date elig rec
+c.el.prty		is binary	c_el_prty[]		is binary	'eligibility priority
+c.el.ef.dt		is date		c_el_ef_dt[]	is date		'eligibility effective 
+c.el.la.dt		is date		c_el_la_dt[]	is date		'eligibility lapse date
+c.el.id.1		is alpha	c_el_id_1[]		is alpha	'eligibility id (1)
+c.el.id.2		is alpha	c_el_id_2[]		is alpha	'insured's group name
+c.el.ver		is alpha	c_el_ver[]		is alpha	'eligibility verified
+c.el.fs			is binary	c_el_fs[]		is binary	'funding source number
+c.el.e.lia		is binary	c_el_e_lia[]	is binary	'client el max event lia
+c.el.h.lia		is numeric	c_el_h_lia[]	is numeric	'client el max hours lia
+c.el.d.lia		is numeric	c_el_d_lia[]	is numeric	'client el max dollars 
+c.seqnumb		is alpha	c_seqnumb[]		is alpha	'elig record unique 
+c.eg.insln		is alpha	c_eg_insln[]	is alpha	'insured's last name
+c.eg.insfn		is alpha	c_eg_insfn[]	is alpha	'insured's first name
+c.eg.insmi		is alpha	c_eg_insmi[]	is alpha	'insured's middle name
+c.eg.insa1		is alpha	c_eg_insa1[]	is alpha	'insured's street 
+c.eg.insa2		is alpha	c_eg_insa2[]	is alpha	'insured's address line2
+c.eg.inscy		is alpha	c_eg_inscy[]	is alpha	'insured's city
+c.eg.insst		is alpha	c_eg_insst[]	is alpha	'insured's state
+c.eg.inszp		is alpha	c_eg_inszp[]	is alpha	'insured's zip code
+c.eg.insph		is alpha	c_eg_insph[]	is alpha	'insured's telephone 
+c.eg.insrc		is alpha	c_eg_insrc[]	is alpha	'client relation to 
+c.eg.insbd		is date		c_eg_insbd[]	is date		'insured's date of birth
+c.eg.inssx		is alpha	c_eg_inssx[]	is alpha	'insured's sex
+c.eg.insem		is alpha	c_eg_insem[]	is alpha	'insured's employer
+c.eg.inac		is alpha	c_eg_inac[]		is alpha	'insured's area code
+sub.suff		is alpha	sub_suff[]		is alpha	'insured's suffix
+c.el.clsub		is alpha	c_el_clsub[]	is alpha	'is client subscriber?
+c.el.dduct		is alpha	c_el_dduct[]	is alpha	'deductible amount
+c.el.coins		is alpha	c_el_coins[]	is alpha	'coinsurance amount
+c.patidcdq		is alpha	c_patidcdq[]	is alpha	'patient code qualifier
+c.eg.sid		is alpha	c_eg_sid[]		is alpha	'subscriber primary id
+c.el.pb			is alpha	c_el_pb[]		is alpha	'pharmacy benefits
+c.el.stf1		is alpha	c_el_stf1[]		is alpha	'staff entering 3 party
+c.el.tcmi		is alpha	c_el_tcmi[]		is alpha	'tcomi number
+$$el.cont		is alpha	$$el_cont[]		is alpha	'eligibility contract
+$$el.cp%		is numeric	$$el_cp%[]		is numeric	'eligibility copay 
+$$el.cp$		is numeric	$$el_cp$[]		is numeric	'eligibility copay amt
+					
+'address record 13					
+c.ad.rec		is header	c_ad_uid[]		is numeric	'case address record
+c_ad_effd[]		is date						'effective date of case address rec
+c.addr1			is alpha	c_addr1[]		is alpha	'address (1)
+c.addr2			is alpha	c_addr2[]		is alpha	'address (2)
+c.city			is alpha	c_city[]		is alpha	'city
+c.state			is alpha	c_state[]		is alpha	'state
+c.zip			is alpha	c_zip[]			is alpha	'zip code
+c.tel			is alpha	c_tel[]			is alpha	'telephone number
+c.county		is alpha	c_county[]		is alpha	'county of residence
+c.areacode		is alpha	c_areacode[]	is alpha	'area code
+c.acodeoth		is alpha	c_acodeoth[]	is alpha	'area code-client other
+c.telother		is alpha	c_telother[]	is alpha	'telephone-client other
+c.acodewk		is alpha	c_acodewk[]		is alpha	'area code-client work
+c.telwork		is alpha	c_telwork[]		is alpha	'telephone-client work
+c.city.desc		is alpha	c_city_desc[]	is alpha	'city description - 
+c.county.desc	is alpha	c_county_desc[]	is alpha	'county description-
+c.ad.staff		is alpha	c_ad_staff[]	is alpha	'staff entering address
+					
+'responsible party record 146					
+c.rp			is header	c_rp_uid[]		is numeric	'responsible party 
+c.rp.ln			is alpha	c_rp_ln[]		is alpha	'respon.party last name
+c.rp.fn			is alpha	c_rp_fn[]		is alpha	'first name
+c.rp.mn			is alpha	c_rp_mn[]		is alpha	'middle name
+c.rp.rel		is alpha	c_rp_rel[]		is alpha	'relationship to client
+c.rp.addr1		is alpha	c_rp_addr1[]	is alpha	'address line 1
+c.rp.addr2		is alpha	c_rp_addr2[]	is alpha	'address line 2
+c.rp.city		is alpha	c_rp_city[]		is alpha	'city
+c.rp.st			is alpha	c_rp_st[]		is alpha	'state abbreviation
+c.rp.zip		is alpha	c_rp_zip[]		is alpha	'zip
+c.rpetq			is alpha	c_rpetq[]		is alpha	'respon. party entity 
+c.rp.staff		is alpha	c_rp_staff[]	is alpha	'staff entering resp
+					
+'client contact record 850					
+c.cc.rec		is header	c_cc_uid[]		is numeric	'client contact record
+c_cc_effd[]		is date						'effective date of contact record
+c.cc.prel		is alpha	c_cc_prel[]		is alpha	'parent/guardian 
+c.cc.name		is alpha	c_cc_name[]		is alpha	'parent/guardian name
+c.cc.teleh		is alpha	c_cc_teleh[]	is alpha	'parent/guardian home 
+c.cc.telew		is alpha	c_cc_telew[]	is alpha	'parent/guardian work 
+c.cc.emnm		is alpha	c_cc_emnm[]		is alpha	'emergency contact 
+c.cc.emhph		is alpha	c_cc_emhph[]	is alpha	'emergency contact 
+c.cc.emwph		is alpha	c_cc_emwph[]	is alpha	'emergency contact 
+c.cc.emrel		is alpha	c_cc_emrel[]	is alpha	'relationship of emer.
+c.mr.guard		is alpha	c_cc_guard	is alpha	'guardianship?
+c.cc.staff		is alpha	c_cc_staff[]	is alpha	'staff entering contact
+					
+'mailing address record 2289					
+c.ml.rec		is header	c_ml_uid[]		is numeric	'mailing add rec header
+c_ml_effd[]		is date						'effective date of mailing add rec
+c.ml.addr1		is alpha	c_ml_addr1[]	is alpha	'mailing address 1
+c.ml.addr2		is alpha	c_ml_addr2[]	is alpha	'mailing address 2
+c.ml.city		is alpha	c_ml_city[]		is alpha	'mailing address city
+c.ml.state		is alpha	c_ml_state[]	is alpha	'mailing address state
+c.ml.zip		is alpha	c_ml_zip[]		is alpha	'mailing address zip
+c.ml.city.desc	is alpha	c_ml_city_desc[] is alpha	'city description
+c.ml.staff		is alpha	c_ml_staff[]	is alpha	'staff ent mailing addr
+
+'household record 3070
+c.hh.rec		is header	c_hh_uid[]		is numeric	'household record header
+c_hh_effd[]		is date						'effective date of household record
+c.hh.name		is alpha	c_hh_name[]		is alpha	'name
+c.hh.id			is numeric	c_hh_id[]		is numeric	'id
+c.hh.relship	is alpha	c_hh_relship[]	is alpha	'relationship
+c.hh.age		is alpha	c_hh_age[]		is alpha	'age flag
+c.hh.current	is alpha	c_hh_current[]	is alpha	'current
+c.hh.staff		is alpha	c_hh_staff[]	is alpha	'staff
+c.hh.client		is alpha	c_hh_client[]	is alpha	'client
+c.hh.cid		is alpha	c_hh_cid[]		is alpha	'client id
+
+'household income record 3080
+c.inc.rec		is header	c_inc_uid[]		is numeric	'income record header
+c_inc_effd[]	is date						'effective date of income record
+c.inc.id		is numeric	c_inc_id[]		is numeric	'id
+c.inc.type		is alpha	c_inc_type[]	is alpha	'type
+c.inc.amnt		is numeric	c_inc_amnt[]	is numeric	'amount
+c.inc.date		is date		c_inc_date[]	is date		'doc received date
+c.inc.staff		is alpha	c_inc_staff[]	is alpha	'staff
+c.inc.current	is alpha	c_inc_current[]	is alpha	'current
+
+'aka record 3054
+c.aka.rec		is header	c_aka_uid[]		is numeric	'aka record header
+c.aka.lname		is alpha	c_aka_lname[]	is alpha	'aka last name
+c.aka.fname		is alpha	c_aka_fname[]	is alpha	'aka first name
+c.aka.mname		is alpha	c_aka_mname[]	is alpha	'aka middle name
+c.aka.suffix	is alpha	c_aka_suffix[]	is alpha	'aka suffix
+c.aka.staff		is alpha	c_aka_staff[]	is alpha	'staff entering aka
+					
+'private pay record 7911					
+$$pp.rec		is header	pp_uid[]		is numeric	'private pay record
+pp.staff		is alpha	pp_staff[]		is alpha	'fin assess staff
+pp.tmnginc		is numeric	pp_tmnginc[]	is numeric	'total mon gross income
+pp.tmnuinc		is numeric	pp_tmnuinc[]	is numeric	'total mon unearn income
+pp.tmi			is numeric	pp_tmi[]		is numeric	'total monthly incomev
+pp.tmnexin		is numeric	pp_tmnexin[]	is numeric	'total mon eoe
+pp.tadginc		is numeric	pp_tadginc[]	is numeric	'total adjust gross inc
+pp.ovrrsn		is alpha	pp_ovrrsn[]		is alpha	'mmf override reason
+pp.100std		is alpha	pp_100std[]		is alpha	'consumer pay 100%
+pp.100why		is alpha	pp_100why[]		is alpha	'if 100%, due to:
+pp.100svcs		is alpha	pp_100svcs[]	is alpha	'if 100%, affects:
+$$pp.d.lia		is numeric	$$pp_d_lia[]	is numeric	'pvt pay max dollars lia
+$$pp.eff		is date		$$pp_eff[]		is date		'private pay eff date
+$$pp.lap		is date		$$pp_lap[]		is date		'private pay lap date
+pp.mmftot		is binary	pp_mmftot[]		is binary	'total fam/hh mbrs mmf
+pp.chipref		is alpha
+pp.ssdimdf		is alpha
+
+'financial verification record 26316
+c.fver.rec		is header	c_fver_ruid[]	is numeric	'financial verify record
+c.fver.uid		is alpha	c_fver_uid[]	is alpha	'financial verify uid
+							c_fver_effd[]	is date		'financial verify effd
+c.fver.vdate	is date		c_fver_vdate[]	is date		'financial verify date
+c.fver.edate	is date		c_fver_edate[]	is date		'fin verify entry date
+c.fver.staff	is alpha	c_fver_staff[]	is alpha	'fin verify entry staff
+
+'client housing record 26325
+c.hou.rec		is header	c_hou_effd		is date		'client housing effd
+c.hou.livarr	is alpha	c_hou_livarr	is alpha	'client housing living
+c.hou.livarro	is alpha	c_hou_livarro	is alpha	'client housing living
+c.hou.where		is alpha	c_hou_where		is alpha	'client housing where
+c.hou.whereo	is alpha	c_hou_whereo	is alpha	'client housing where
+c.hou.sec8		is alpha	c_hou_sec8		is alpha	'client housing sec8
+c.hou.sec8w		is alpha	c_hou_sec8w		is alpha	'client housing sec8
+c.hou.edate		is date		c_hou_edate		is date	'client housing edate
+c.hou.staff		is alpha	c_hou_staff		is alpha	'client housing staff
+
+'extraordinary expenses record 26340
+c.exe.rec		is header	c_exe_uid[]		is numeric	'extra exp record
+							c_exe_effd[]	is date		'extra exp effd
+c.exe.type		is alpha	c_exe_type[]	is alpha	'extra exp type
+c.exe.sdate		is date		c_exe_sdate[]	is date		'extra exp sdate
+c.exe.edate		is date		c_exe_edate[]	is date		'extra exp edate
+c.exe.amount	is numeric	c_exe_amount[]	is numeric	'extra exp amount
+c.exe.docdt		is date		c_exe_docdt[]	is date		'extra exp date
+c.exe.other		is alpha	c_exe_other[]	is alpha	'extra exp other
+c.exe.current	is alpha	c_exe_current[]	is alpha	'extra exp current
+c.exe.staff		is alpha	c_exe_staff[]	is alpha	'extra exp staff
+
+'VARIABLES
+'rc				is binary
+'title			is alpha
+lib_finassmt	is binary	'library for financial functiond
+string			is alpha	'used to capture & format data 
+web_dir			is alpha	'Directory of web pages
+web_dir = "http://gcnet:87/cmhc/helpfiles/FinancialAssessment/"
+web_str			is alpha	'String variable for web page locations
+validation		is alpha	'Validation flag, Y = OK, N = Problem
+validzipflag	is alpha	'Validation flag for zip code, Y=ok, else reason
+validpnumber	is alpha	'Validation flag for phone number, Y=ok, else reason
+err_msg			is alpha	'Used in validation, return with error message
+city_code[]		is alpha	'array listing cities codes for drop box
+city_desc[]		is alpha	'array listing cities describtion for drop box
+city_status[]	is alpha	'array listing cities active status for drop box
+county_code		is alpha	'Variable to hold alt 3 of City DCT
+current_age		is numeric	'calculate current age of client
+menu_array[]	is alpha	'process menu
+name_string		is alpha	'name to display in process menu
+menu_title		is alpha
+form_name		is alpha
+
+dct_22[]		is alpha	'arrary listing for DCT 22 drop box
+dct_29_code[]	is alpha	'arrary listing for DCT 29 drop box
+dct_29_desc[]	is alpha	'arrary listing for DCT 29 drop box
+dct_29_status[]	is alpha	'arrary listing for DCT 29 drop box
+dct_32[]		is alpha	'arrary listing for DCT 32 drop box
+dct_36[]		is alpha	'arrary listing for DCT 36 drop box
+dct_106[]		is alpha	'arrary listing for DCT 106 drop box
+dct_262[]		is alpha	'arrary listing for DCT 262 drop box
+dct_89_code[]	is alpha	'arrary listing for DCT 89 drop box
+dct_89_desc[]	is alpha	'arrary listing for DCT 89 drop box
+dct_89_status[]	is alpha	'arrary listing for DCT 89 drop box
+dct_90_code[]	is alpha	'arrary listing for DCT 90 drop box
+dct_90_desc[]	is alpha	'arrary listing for DCT 90 drop box
+dct_90_status[]	is alpha	'arrary listing for DCT 90 drop box
+
+fs_no[]			is binary
+fs_num[]		is alpha
+fs_type[]		is alpha
+fs_desc[]		is alpha
+con_id[]		is alpha
+con_nm[]		is alpha
+con_fs[]		is binary
+con_eff[]		is date
+con_lap[]		is date
+
+
+'Button and link Variables
+view_only		is alpha	'view only button
+save_btn		is alpha
+nav_btn			is alpha
+back_btn		is alpha
+addf2a_btn		is alpha	'add name section
+addf2b_btn		is alpha	'add other section
+addf2c_btn		is alpha	'add physical address section
+addf2d_btn		is alpha	'add mailing address section
+addf2e_btn		is alpha	'add mailing address section
+addf3a_btn		is alpha	'add mailing address section
+addf4a_btn		is alpha	'add mailing address section
+addf4b_btn		is alpha	'add mailing address section
+correctf2c_btn	is alpha	'correct physical address section
+correctf2d_btn	is alpha	'correct mailing address section
+correctf2e_btn	is alpha	'correct mailing address section
+correctf3a_btn	is alpha	'correct mailing address section
+prevaddr_btn	is alpha	'display previous address
+prevmladdr_btn	is alpha	'display previous mailing address
+el_upt_btn[]	is alpha	'eligibility update button
+el_del_btn[]	is alpha	'eligibility delete button
+el_fv_btn[]		is alpha	'eligibility verification button
+hh_upt_btn[]	is alpha	'household update button
+
+edit_aka[]		is alpha	'link to edit an aka record
+del_aka[]		is alpha	'link to delete an aka record
+add_aka			is alpha
+edit_fver[]		is alpha	'link to edit an fin verify record
+del_fver[]		is alpha	'link to delete an fin verify record
+add_fver		is alpha	'link to add an fin verify record
+edit_hh[]		is alpha	'link to edit a household record
+del_hh[]		is alpha	'link to delete household record
+edit_inc[]		is alpha	'link to edit an income record
+del_inc[]		is alpha	'link to delete an income record
+edit_hou		is alpha	'link to edit an houing record
+edit_exe[]		is alpha	'link to edit an exe record
+del_exe[]		is alpha	'link to delete an exe record
+add_exe			is alpha
+
+'Counters & control Variables
+continue		is alpha
+continue2		is alpha
+continue3		is alpha
+continue3b		is alpha
+continue3c		is alpha
+continue3f		is alpha
+continue4		is alpha
+continue4b		is alpha
+continue4c		is alpha
+continue4c_1	is alpha
+continue4d		is alpha
+continue4d_1	is alpha
+display2		is alpha
+counter_4		is binary
+counter_4a		is binary
+counter_4b		is binary
+counter_4c		is binary
+counter_4d		is binary
+rec_counter		is binary
+el_counter		is binary
+fver_counter	is binary
+city_counter	is binary	'used in editing city description
+sub_counter		is binary	'used in editing city description
+cnt				is binary	'reuseable array counter
+cnt1			is binary	'reuseable array counter
+a_counter		is binary	'reuseable array counter
+b_counter		is binary	'reuseable array counter
+financial_staff	is alpha	'user running program is member of financial group
+checkedname		is alpha	'Name verified check box
+checkeddemo		is alpha	'Demographics verified check box
+checkedphaddr	is alpha	'physical address verified check box
+checkedmladdr	is alpha	'mailing address verified check box
+checkedguard	is alpha	'guardian/parent information verified check box
+copyaddr		is alpha	'copy physical address to mailing address
+legalguard		is alpha
+updatetype		is alpha	'add or correct flag; a - add, c - correct, v - view
+editmode		is numeric	'1 - view only, 2 - update, 3 - correct
+akafound		is alpha	'should new aka be added
+correct_form3	is alpha
+fs_uid			is alpha
+calculated_mmf	is numeric
+income_unearned	is numeric
+income_earned	is numeric
+income_total	is numeric
+income_adjusted	is numeric
+expenses_extra	is numeric
+family_size		is numeric
+
+override_mmf	is alpha
+override_reason	is alpha	'pp.ovrrsn dct 153
+override_stdfee	is alpha	'pp.100std dct 29
+override_stdwhy	is alpha	'pp.100why dct 92
+override_stdsvc	is alpha	'pp.100svcs dct 93
+
+log               is i
+
+'*****************************SET FONT STYLES***********************************
+$setstyle(".head1", "font-family:ariel", "font-size:12pt",
+		  "color:darkblue", "font-weight:bold")
+$setstyle(".head2", "font-family:times new roman", "font-size:14pt",
+		  "color:darkblue")
+$setstyle(".desc1", "font-family:times new roman", "font-size:10pt",
+		  "color:black", "font-weight:bold")
+$setstyle(".desc1u", "font-family:times new roman", "font-size:10pt",
+		  "color:black", "font-weight:bold", "font-style:underline")
+$setstyle(".desc2", "font-family:times new roman", "font-size:10pt",
+		  "color:black")
+$setstyle(".desc2i", "font-family:ariel", "font-size:10pt",
+		  "color:black", "font-weight:italics")
+$setstyle(".desc2b", "font-family:times new roman", "font-size:10pt",
+		  "color:black", "font-weight:bold")
+$setstyle(".desc1nb", "font-family:times new roman", "font-size:10pt",
+		  "color:black")
+
+'****************************PROCEDURE SECTION**********************************
+
+'Initialize librarys 
+	rc = $loadlib(lib_finassmt, "lib_FINASSMT")
+	rc = $loadlib(log,"LIB-log")
+	if rc > 0 then
+	   $brmsg($fmt(rc,"Error loading LIB-log. RC:99"),1,"CW")
+	   return
+	endif
+	log:setLogFile(`$scriptid + ".log"`)
+
+	if it_staff = "Y" then
+		editmode = 4
+	elseif billing_staff = "Y" then
+		editmode = 3
+	elseif benefit_advisor = "Y" then
+		editmode = 2
+	else
+		editmode = 1
+	endif
+
+if editmode = 1 or report_type = "D" then
+'	if snap_handle:sn_viewLatest(reportID, ,client_id,2,$scriptID) != 0
+	if {"l_snapLibSC"}sn_viewLatest(reportID, ,client_id,2,$scriptID) != 0
+		string = "There is no " + title + " snapshot on file for Client ID " +
+				 client_id + "." + report_type
+		$brmsg(string, 1, "W")
+	endif
+	return
+elseif report_type = "U" then
+	goto UPDATE
+else
+	goto MAIN
+endif
+return
+
+UPDATE:
+	ReportID = "GCCFINAU"
+	gosub READREC
+
+	$submitopt("off", "")
+	$cancelopt("off", "Quit")
+	$form("Demo")
+
+	$tag("<CENTER>") $text("The Gulf Coast Center","head1") $tag("</CENTER>")
+	string = "Financial Assessment"
+	$tag("<CENTER>") $text(string,"head2") $tag("</CENTER>")
+
+	$br()
+	$text("Assessment Date: ","datatag") $text($today)
+	$br() $tag(hr)
+	$table("D1", ,"width='100%'")
+		$row()
+			$col("left") $text("Client Name:", "datatag")
+						 $text(c_ln) $text(", ")
+						 $text(c_fn) $text(" ")
+						 $text(c_mn) $text(" ")
+						 string = $dct(44, c_suffix, "D")
+						 $text(string)
+			$col("right") $text("Client ID:", "datatag")
+						  $text(client_id)
+	$endtable("D1")
+	$tag(hr) $br(2)
+	$style("desc1nb")
+	string = "I met face to face on " + $format($today,"MM/DD/YYYY") + 
+			 " with " + c_fn + " " + c_ln + " to complete a Financial " +
+			 "Assessment. No changes were reported " +
+			 "by client since last assessment completed on " +
+			 $format($$pp.eff,"MM/DD/YYYY") + "."
+	$tag("<CENTER>") $text(string,"desc2b") $tag("</CENTER>") $br(2)
+
+	{"l_snapLibSC"}sn_CreateReport(RptTitle,,,ReportID, client_id,2,$operstaffid)
+'	%include c_pbutton	
+	$sendform("Demo")
+
+	if $endbutton = "SUBMIT" then
+		gosub frm_ExitWarn
+		goto UPDATE
+	elseif $endbutton = "CANCEL" then
+		gosub frm_ExitWarn
+		goto UPDATE
+	else
+	' Check whether a new document register was just created. 
+		snapID = snap_handle:sn_GetSnapID() 
+		if snapID dp then 
+	' A snapshot was taken and successfully saved. Next we should save the entered data. 
+	      T = client_id + "|" + report_type + "|SNAP|" + snapID
+         log:l(T)
+			rtrncode = 0
+		    rc = snap_handle:sn_viewLatest(ReportID,,client_id,2,$ScriptID)
+			return
+		else 
+	' Display Snapshot Error form with Retry button and Cancel button. 
+         T = client_id + "|" + report_type + "|SNAPFAIL"
+         log:l(T)
+			select snap_handle:sn_failScreen(reportID,,,,,"RC") 
+				case "R" 
+				case "C"    draft_handle:dr_cancel(title,CID) 
+			endselect 
+			rtrncode = 1
+	' Since nextDo is still "REPORT1", we'll re-display the report form. 
+		endif 
+	endif
+return
+
+
+MAIN:
+	gosub READREC
+
+	$submitopt("off", "")
+	$cancelopt("off", "Quit")
+	$form("Demo")
+
+	$tag("<CENTER>") $text("The Gulf Coast Center","head1") $tag("</CENTER>")
+	string = "Financial Assessment and Medicaid Eligibility Screening"
+	$tag("<CENTER>") $text(string,"head2") $tag("</CENTER>")
+
+	$br()
+	$text("Assessment Date: ","datatag") $text($$pp.eff)
+	$br() $tag(hr)
+	$table("D1", ,"width='100%'")
+		$row()
+			$col("left") $text("Client Name:", "datatag")
+						 $text(c_ln) $text(", ")
+						 $text(c_fn) $text(" ")
+						 $text(c_mn) $text(" ")
+						 string = $dct(44, c_suffix, "D")
+						 $text(string)
+			$col("right") $text("Client ID:", "datatag")
+						  $text(client_id)
+	$endtable("D1")
+	$tag(hr)
+	$style("desc1nb")
+
+	string = "Last line of Financial Assesment is indicated by staff signature line."
+	$tag("<CENTER>") $text(string,"desc1") $tag("</CENTER>")
+
+	if $maxarray(c_aka_lname[]) > 0 then
+		$text("Also Known As (AKA) Names:", "datatag") $br()
+		$table("aka", ,"width='100%'")
+			$row()
+				$col("left") $text("Last Name:", "desc1")
+				$col("left") $text("First Name:", "desc1")
+				$col("left") $text("Middle Name:", "desc1")
+				$col("left") $text("Suffix:", "desc1")
+			rec_counter = 1	
+			do while rec_counter <= $maxarray(c_aka_lname[])
+				$row()
+					$col("left") $text(c_aka_lname[rec_counter])
+					$col("left") $text(c_aka_fname[rec_counter])
+					$col("left") $text(c_aka_mname[rec_counter])
+					string = $dct(44, c_aka_suffix[rec_counter], "D")
+					$col("left") $text(string)
+					rec_counter++
+			enddo
+		$endtable("aka")
+	endif
+	
+	$text(" ", "desc1") $br()
+	$text("Demographics Section:", "datatag") $br()
+	$table("demo", ,"width='100%'")
+		$row()
+			$col("left",,"30%","2") $text("Social Security Number:", "desc1")
+			$col("left",,"20%") $text(c_ssn)
+			$col("left",,"30%","2") $text("Gender:", "desc1")
+			string = $dct(22, c_sex, "D")
+			$col("left", ,"20%") $text(string)
+		$row()
+			$col("left",,"30%","2") $text("Date of Birth:", "desc1")
+			$col("left",,"20%") $text(c_bd)
+			$col("left",,"30%","2") $text("Age:", "desc1")
+			$col("left",,"20%") $text(c_age_y)
+		$row()
+			$col("left",,"30%","2") $text("Ethnicity:", "desc1")
+			string = $dct(23, c_race, "D")
+			$col("left", ,"20%") $text(string)
+			$col("left",,"30%","2") $text("Marital Status:", "desc1")
+			string = $dct(28, c_mar, "D")
+			$col("left", ,"20%") $text(string)
+		$row()
+			$col("left",,"30%","2") $text("Employment Status:", "desc1")
+			string = $dct(10, c_empl, "D")
+			$col("left", ,"20%") $text(string)
+	$endtable("demo")
+
+	$tag(hr)
+	$table("address", ,"width='100%'")
+		$row()
+			$col("center",,"33%") $text("Physical Address", "desc1u")
+			$col("center",,"33%") $text("Mailing Address", "desc1u")
+			$col("center",,"33%") $text("Phone Numbers", "desc1u")
+		$row()
+			$col("left",,"33%") $text(c.addr1)
+			$col("left",,"33%") $text(c.ml.addr1)
+			$col("left",,"33%") $text("Home:","desc1")
+								$text(c.areacode)
+								$text(c.tel)
+		$row()
+			$col("left",,"33%") $text(c.addr2)
+			$col("left",,"33%") $text(c.ml.addr2)
+			$col("left",,"33%") $text("Work:","desc1")
+								$text(c.acodewk)
+								$text(c.telwork)
+		$row()
+			$col("left",,"33%") $text(c.city.desc) $text(", ")
+								$text(c.state) $text(" ")
+								$text(c.zip)
+			$col("left",,"33%") $text(c.ml.city.desc) $text(", ")
+								$text(c.ml.state) $text(" ")
+								$text(c.ml.zip)			
+			$col("left",,"33%") $text("Other:","desc1")
+								$text(c.acodeoth)
+								$text(c.telother)
+		$row()
+			$col("left",,"33%") $text("County: ","desc1")
+								$text(c.county.desc)
+	$endtable("address")
+	$tag(hr)
+
+	$text("Does client have a legal guardian?", "datatag")
+	string = $dct(29, c.mr.guard, "D")
+	$text(string)
+	$table("f2e2", ,"width='100%'")
+		$row()
+			$col("center",,"50%")
+				if current_age >= 18 then
+					$text("Guardian Information", "desc1u")
+				else
+					$text("Guardian/Parent Information", "desc1u")
+				endif			
+			$col("center",,"50%") $text("Emergency Contact", "desc1u")
+		$row()
+			$col("left",,"50%")
+			if current_age >= 18 or
+			  (current_age < 18 and c.mr.guard = "Y")  then
+				$text("Guardian Name:", "desc1")
+			else
+				$text("Parent Name:", "desc1")
+			endif
+			if (current_age >= 18 and c.mr.guard = "Y") or 
+			    current_age < 18 then
+				$text(c.cc.name)
+			endif
+			$col("left",,"50%") $text("Contact Name:", "desc1") $text(c.cc.emnm)
+		$row()
+			string = $dct(2224, c.cc.prel, "D")
+			$col("left",,"50%")
+				$text ("Relationship:", "desc1") 
+			if (current_age >= 18 and c.mr.guard = "Y") or 
+			    current_age < 18 then
+				$text(string)
+			endif
+			$col("left",,"50%")
+				string = $dct(55, c.cc.emrel, "D")
+				$text ("Relationship:", "desc1") $text(string)
+		$row()
+			$col("left",,"50%") $text("Home Phone:", "desc1") 
+			if (current_age >= 18 and c.mr.guard = "Y") or 
+			    current_age < 18 then
+				$text(c.cc.teleh)
+			endif
+			$col("left",,"50%") $text("Home Phone:", "desc1") $text(c.cc.emhph)
+		$row()
+			$col("left",,"50%") $text("Work Phone:", "desc1") 
+			if (current_age >= 18 and c.mr.guard = "Y") or 
+			    current_age < 18 then
+				$text(c.cc.telew)
+			endif
+			$col("left",,"50%") $text("Work Phone:", "desc1") $text(c.cc.emwph)
+	$endtable("f2e2")
+
+	$tag(hr)
+
+'eligibility records 
+	$text("Eligibility Information:", "datatag") $br()
+	rec_counter = 1
+	do while rec_counter <= $maxarray(c_el_fs[])
+		if c_el_la_dt[rec_counter] !dp then
+			form_name = "fs" + $format(rec_counter,"ZZZ")
+			$table(form_name, ,"frame='border' rules='none' cellspacing='0' cellpadding='0%' width='100%'")
+			$row()
+    	 		$col("left",,"50%") $text("Fund Source:","desc1")
+					string = $fs(c_el_fs[rec_counter], "D")
+			    	$text(c_el_fs[rec_counter]) $text(string)
+				$col("left",,"50%") $text("Eligibility Begin Date:", "desc1")
+			    	$text(c_el_ef_dt[rec_counter])
+			$row()
+				$col("left",,"50%") $text("Client Relationship to Insured:", "desc1")
+					string = $dct(106, c_eg_insrc[rec_counter], "D")
+					$text(string)
+				$col("left",,"50%") $text("Insured's Name:", "desc1")
+			    	$text(c_eg_insfn[rec_counter]) $text(c_eg_insmi[rec_counter])
+					$text(c_eg_insln[rec_counter])
+			$row()
+				$col("left",,"50%") $text("Insured's ID:", "desc1")
+					if c_el_clsub[rec_counter] = "Y" then
+						$text(c_el_id_1[rec_counter])
+					else
+						$text(c_eg_sid[rec_counter])
+					endif
+				$col("left",,"50%") $text("Insured's Group Number:", "desc1")
+					$text(c_el_id_2[rec_counter])
+			$row()
+				$col("left",,"50%") $text("Co-Pay amount:", "desc1")
+					$text($$el_cp$[rec_counter])
+				$col("left",,"50%") $text("Pharmacy Benefits:", "desc1")
+				string = $dct(36, c_el_pb[rec_counter], "D")
+					$text(string)
+			$endtable(form_name)
+		endif
+		rec_counter++
+	enddo
+	$tag(hr)
+
+	$text("Responsible Party:", "datatag") $br()
+	$table("resprty", ,"width='100%'")
+		$row()
+     		$col("left",,"50%") $text("Responsible Party: ","desc1")
+     		$col("left",,"50%") $text("Relationship to Client: ","desc1")
+		$row()
+			string = c.rp.fn + " " + c.rp.mn + " " + c.rp.ln
+     		$col("left",,"50%") $text(string)
+			string = $dct(55, c.rp.rel, "D")
+     		$col("left",,"50%") $text(string)
+		$row()
+     		$col("left",,"50%") $text(c.rp.addr1)
+		if c.rp.addr2 dp then
+			$row()
+			$col("left",,"50%") $text(c.rp.addr2)
+		endif
+		$row()			
+			string = c.rp.city + " " + c.rp.st + ", " + c.rp.zip
+     		$col("left",,"50%") $text(string) 
+	$endtable("resprty")
+	$tag(hr)
+
+	$text("Housing Information:", "datatag") $br()
+	$table("housing", ,"width='100%'")
+		$row()
+     		$col("left") $text("Living Arrangements: ","desc1")
+			string = $dct(89, c_hou_livarr, "D")
+			$text(string) $text(c_hou_livarro)
+     		$col("left") $text("Housing: ","desc1")
+			string = $dct(90, c_hou_where, "D")
+			$text(string) $text(c_hou_whereo)
+		$row()
+     		$col("left") $text("Section 8:","desc1")
+			string = $dct(29, c_hou_sec8, "D")
+			$text(string)
+     		$col("left") $text("Sec 8 Waiting List:","desc1")
+			string = $dct(29, c_hou_sec8w, "D")
+			$text(string) 
+	$endtable("housing")
+	$tag(hr)
+
+	$text("Household and Income Information:", "datatag") $br()
+	a_counter = 1
+	do while a_counter <= $maxarray(c_hh_name[])
+		if c_hh_current[a_counter] = "Y" then
+			form_name = "hh1" + $format(a_counter,"ZZZ")
+			$table(form_name, ,"frame='border' rules='none' cellspacing='0' cellpadding='0%' width='100%'")
+			$row()
+     			$col("left",,"45%") $text("Name:","desc1")
+					$text(c_hh_name[a_counter])
+     			$col("left",,"25%") $text("Relationship:","desc1")
+					string = $dct(91, c_hh_relship[a_counter], "D")
+					$text(string)
+     			$col("left",,"30%") $text("Age:","desc1")
+					string = $dct(9246, c_hh_age[a_counter], "D")
+					$text(string)
+			$row()
+	 			$col("center",,"45%") $text("Income Type:", "desc1")
+				$col("center",,"25%") $text("Monthly Amount:", "desc1")
+				$col("center",,"30%") $text("Date Doc Provided:", "desc1")
+			$row()
+			b_counter = 1
+			do while b_counter <= $maxarray(c_inc_id[])
+				if c_inc_id[b_counter] = c_hh_id[a_counter] then
+					if c_inc_current[b_counter] = "Y" then
+						$row()
+							string = $dct(9045, c_inc_type[b_counter], "D")
+							$col("center",,"45%") $text(string)
+							string = $format(c_inc_amnt[b_counter],"$ZZZZZ9.99")
+							$col("center",,"25%") $text(string)
+							$col("center",,"30%") $text(c_inc_date[b_counter])
+					endif
+				endif
+				b_counter++
+			enddo
+		$endtable("form_name")
+		endif
+		a_counter++
+	enddo
+	$tag(hr)
+
+	$text("Extraordinary Expenses:", "datatag") $br()
+	$table("f4d", ,"width='100%'")
+		$row()
+     		$col("center") $text("Type","datatag")
+     		$col("center") $text("Start","datatag")
+     		$col("center") $text("End","datatag")
+     		$col("center") $text("Monthly Amount","datatag")
+     		$col("center") $text("Documented","datatag")
+		rec_counter = 1
+		do while rec_counter <= $maxarray(c_exe_type[])
+			if c_exe_current[rec_counter] = "Y" then
+				$row()
+					string = $dct(9245, c_exe_type[rec_counter], "D")
+					$col("center") $text(string)
+							   	$text(c_exe_other[rec_counter])
+					$col("center") $text(c_exe_sdate[rec_counter])
+					$col("center") $text(c_exe_edate[rec_counter])
+					string = $format(c_exe_amount[rec_counter],"$ZZZZZ9.99")
+					$col("center") $text(string)
+					$col("center") $text(c_exe_docdt[rec_counter])
+			endif
+			rec_counter++
+		enddo
+	$endtable("f4d")
+	$tag(hr)
+
+	$text("Fee Determination:", "datatag") $br()
+	$table("calcmmf", ,"width='100%'")
+		$row()
+			string = $format(pp.tmnuinc,"$ZZZZZ9.99")
+ 			$col("right",,"10%")  $text(string)
+ 			$col("left",,"%40") $text("Unearned Income", "desc1")
+			$col("left",,"%50") $text("Number of Family Members:", "desc1")
+ 								$text(pp.mmftot)
+		$row()
+			string = $format(pp.tmnginc,"$ZZZZZ9.99")
+ 			$col("right",,"%10")  $text(string)
+			$col("left",,"%40") $text("Earned Income", "desc1")
+		$row()
+			string = $format(pp.tmi,"$ZZZZZ9.99")
+ 			$col("right",,"%10")  $text(string)
+			$col("left",,"%40") $text("Total Monthly Income", "desc1")
+			if pp.100std = "Y" then
+				$col("left",,"%50")
+				$text("Client to Pay 100 percent of standard fee due to:", "desc1")
+			endif
+		$row()
+			string = $format(pp.tmnexin,"$ZZZZZ9.99")
+ 			$col("right",,"%10")  $text(string)
+			$col("left",,"%40") $text("Extraordinary Expenses", "desc1")
+			if pp.100std = "Y" then
+				$col("left",,"%50")
+				string = $dct(92, pp.100why, "D") $text(string)
+			endif
+		$row()
+			string = $format(pp.tadginc,"$ZZZZZ9.99")
+ 			$col("right",,"%10")  $text(string)
+			$col("left",,"%40") $text("Total Monthly Adjusted Gross Income", "desc1")
+			if pp.100std = "Y" then
+				$col("left",,"%50")
+				$text("100 Percent affects:", "desc1")
+				string = $dct(93, pp.100svcs, "D") $text(string)
+			endif
+		$row()
+ 			$col("right",,"%10")  $text("______")
+			$col("left",,"%40") $text("_______________________________", "desc1")
+		$row()
+			string = $format($$pp.d.lia,"$ZZZZZ9.99")
+ 			$col("right",,"%10")  $text(string,"datatag")
+			$col("left",,"%40") $text("Maximum Monthly Fee", "desc1")
+			if pp.ovrrsn dp then
+				$col("left",,"%50")
+				$text("Calculated MMF Overridden due to:", "desc1")
+				string = $dct(153, pp.ovrrsn, "D") $text(string)
+			endif
+	$endtable("calcmmf")
+	$tag(hr)
+	if current_age < 18 then
+		string = "Based on the information provided, the consumer is being " +
+			     "referred for CHIP eligibility:"
+		$text(string, "datatag")
+		string = $dct(29, pp.chipref, "D") $text(string) $br()
+	endif
+
+	string = "Based on the information provided, the consumer is being " +
+		     "referred for SSI/Medicaid application:"
+	$text(string, "datatag")
+	string = $dct(29, pp.ssdimdf, "D") $text(string) $br()
+
+	$tag(hr)
+	$tag("<CENTER>")
+	$text("Authorizations and Assignment of Benefits","datatag")
+	$tag("</CENTER>")
+	$table("aab", ,"width='100%'")
+		$row()
+ 			$col("right",,"5%") $text("1.", "desc2")
+			string = "I understand The Gulf Coast Center may not withhold " +
+			"treatment, Medicaid benefits, or payment processing if I do not " +
+			"sign this authorization. However, The Gulf Coast Center may " +
+			"require me to sign the authorization if I receive alcohol and/or " +
+			"drug abuse treatment since this form may be used to obtain " +
+			"payment for alcohol and/or drug treatment."
+ 			$col("left",,"%95") $text(string, "desc2")
+		$row()
+ 			$col("right",,"5%") $text("2.", "desc2")
+			string = "I agree to inform The Gulf Coast Center of any " +
+			"significant financial changes that affect my income or the " +
+			"income of a household family member."
+ 			$col("left",,"%95") $text(string, "desc2")
+		$row()
+ 			$col("right",,"5%") $text("3.", "desc2")
+			string = "I authorize the payment of insurance benefits from my " +
+			"third-party insurance provider to The Gulf Coast Center for all " +
+			"covered services provided by The Gulf Coast Center."
+ 			$col("left",,"%95") $text(string, "desc2")
+		$row()
+ 			$col("right",,"5%") $text("4.", "desc2")
+			string = "I authorize The Gulf Coast Center to disclose or " +
+			"receive any information necessary to my third-party insurance " +
+			"provider or other organizations for the purpose of processing " +
+			"claims, securing payment for service rendered, obtaining " +
+			"financial information including verification of income and " +
+			"determining benefits eligibility.  I understand that the " +
+			"information released may include mental health, mental " +
+			"retardation, alcohol/drug, and/or HIV/AIDS/ARC information.  I " +
+			"further authorize The Gulf Coast Center to contact SSA for " +
+			"verification of eligibility and benefits related to SSI, SSDI, " +
+			"Medicaid, and Medicare programs."
+ 			$col("left",,"%95") $text(string, "desc2")
+		$row()
+ 			$col("right",,"5%") $text("5.", "desc2")
+			string = "I authorize The Gulf Coast Center to contact the " +
+			"individual and/or physician indicated in the Emergency Contact " +
+			"section of this form in the event I become incapacitated due to " +
+			"an emergency illness or accident while in treatment or if there " +
+			"is an issue needing immediate addressing.  This emergency " +
+			"contact consent will be in lieu of any other authorizations, if " +
+			"any, I have granted, or not granted, to the above individual " +
+			"and/or physician."
+ 			$col("left",,"%95") $text(string, "desc2")
+		$row()
+ 			$col("right",,"5%") $text("6.", "desc2")
+			string = "I have been informed and understand that there may be " +
+			"services provided tome that my third-party insurance provider " +
+			"will not cover as a benefit and therefore will not pay.  I " +
+			"understand that I am financially responsible for payment of " +
+			"those services as determined by my Financial Assessment."
+ 			$col("left",,"%95") $text(string, "desc2")
+			string = "(Medicare and most private insurance carriers do not " +
+			"cover Service Coordination, Case Management, and MH " +
+			"Rehabilitative services. Case Management and Service Coordination " +
+			"are required upon admission in order to receive GCC services. " +
+			"There is a charge associated with Case Management and Service " +
+			"Coordination.)"
+ 			$text(string, "desc2i")
+		$row()
+ 			$col("right",,"5%") $text("7.", "desc2")
+			string = "I have been informed that my third-party insurance may " +
+			"be considered "
+ 			$col("left",,"%95") $text(string, "desc2")
+			string = "out-of-network " $text(string, "desc2b")
+			string = "for The Gulf Coast Center and therefore may not offer " +
+			"benefits for services at The Gulf Coast Center.  In the event " +
+			"that my third-party insurance will provide benefits to another " +
+			"provider that is " $text(string, "desc2")
+			string = "in-network " $text(string, "desc2b")
+			string = ", The Gulf Coast Center will assist me in accessing " +
+			"services from an " $text(string, "desc2")
+			string = "in-network " $text(string, "desc2b")
+			string = "provider.  I have been informed that under these " +
+			"circumstances I may choose to access services from The Gulf " +
+			"Coast Center only if I pay 100% of the standard charge."
+ 			$text(string, "desc2i")
+		$row()
+ 			$col("right",,"5%") $text("8.", "desc2")
+			string = "I am not currently in violation of the terms of parole " +
+			"or probation and am not currently fleeing from prosecution on a " +
+			"felony charge."
+ 			$col("left",,"%95") $text(string, "desc2")
+		$row()
+ 			$col("right",,"5%") $text("9.", "desc2")
+			string = "Under penalty of perjury, the information stated on " +
+			"all pages of this Financial Assessment/Medicaid Eligibility form " +
+			"is true and correct to the best of my knowledge."
+ 			$col("left",,"%95") $text(string, "desc2")
+		$row()
+ 			$col("right",,"5%") $text("10.", "desc2")
+			string = "I understand that intentionally providing inaccurate " +
+			"or false information or failure to answer truthfully may result " +
+			"in financial and/or other penalties.  Penalties may include but " +
+			"are not limited to payback of any funds awarded by the SSA " +
+			"and/or The Gulf Coast Center."
+ 			$col("left",,"%95") $text(string, "desc2")
+		$row()
+ 			$col("right",,"5%") $text("11.", "desc2")
+			string = "I have not intentionally provided false or inaccurate " +
+			"information."
+ 			$col("left",,"%95") $text(string, "desc2")
+		$row()
+ 			$col("right",,"5%") $text("12.", "desc2")
+			string = "I have not intentionally withheld information relating " +
+			"to his Financial Assessment."
+ 			$col("left",,"%95") $text(string, "desc2")
+		$row()
+ 			$col("right",,"5%") $text("13.", "desc2")
+			string = "I acknowledge that I have been provided the following " +
+			"information in writing:"
+ 			$col("left",,"%95") $text(string, "desc2")
+		$row()
+ 			$col("right",,"5%") 
+			string = "a. A copy of this Financial Assessment/Medicaid " +
+			"Eligibility Screening Form"
+ 			$col("left",,"%95") $text(string, "desc2")
+		$row()
+ 			$col("right",,"5%") 
+			string = "b. A copy of the Monthly-Ability-to-Pay sliding scale " +
+			"with my Maximum Monthly Fee amount indicated."
+ 			$col("left",,"%95") $text(string, "desc2")
+		$row()
+ 			$col("right",,"5%") 
+			string = "c. The name and telephone number of at least one staff " +
+			"person at The Gulf Coast Center that I may contact during " +
+			"regular office hours to discuss the information contained in " +
+			"this financial assessment."
+ 			$col("left",,"%95") $text(string, "desc2")
+		$row()
+ 			$col("right",,"5%") 
+			string = "d. I may voluntarily pay more than the maximum monthly " +
+			"fee."
+ 			$col("left",,"%95") $text(string, "desc2")
+		$row()
+ 			$col("right",,"5%") $text("14.", "desc2")
+			string = "I have been informed that if I do not agree with the " +
+			"results of this Financial Assessment/Medicaid Eligibility " +
+			"Screening I may appeal the results by contacting The Gulf Coast " +
+			"Center's Client Rights Officer in writing within 30 calendar " +
+			"days of the date of this Financial Assessment/Medicaid " +
+			"Eligibility Screening at: 4444 West main, League City, TX 77573, " +
+			"telephone: 1-800-304-4868"
+ 			$col("left",,"%95") $text(string, "desc2")
+	$endtable("aab")
+
+	$br()
+	$text("I have read, understand and agree with the above statements.","desc2b") $br(2)
+	$table("yes", ,"width='100%'")
+		$row()
+ 			$col("left",,"60%")
+			$text("________________________________________________")
+ 			$col("left",,"60%")
+			$text("____________________")
+		$row()
+ 			$col("left",,"60%")
+			$text("Client/Responsible Party Signature", "desc2")
+ 			$col("left",,"60%")
+			$text("Date", "desc2")
+	$endtable("yes")
+
+	$tag(hr)
+	string = "I CHOOSE NOT TO PROVIDE FINANCIAL AND/OR THIRD-PARTY INSURANCE " +
+	         "INFORMATION AS REQUESTED AND/OR DO NOT AGREE TO THE STATEMENTS " +
+			 "LISTED ABOVE.  BY CHOOSING NOT TO PROVIDE THIS INFORMATION I " +
+			 "ACKNOWLEDGE THAT I WAIVE THE RIGHT TO ACCESS FUNDING FOR MY " +
+			 "SERVICES.  I HAVE BEEN INFORMED THAT THE GULF COAST CENTER " +
+			 "WILL CHARGE ME 100% OF THE FULL STANDARD CHARGE FOR SERVICES."
+	$text(string,"desc2b") $br(2)
+
+	$table("no", ,"width='100%'")
+		$row()
+ 			$col("left",,"60%")
+			$text("________________________________________________")
+ 			$col("left",,"60%")
+			$text("____________________")
+		$row()
+ 			$col("left",,"60%")
+			$text("Client/Responsible Party Signature", "desc2")
+ 			$col("left",,"60%")
+			$text("Date", "desc2")
+	$endtable("no")
+	$tag(hr)
+
+	string = "I met face to face on " + $format($today,"MM/DD/YYYY") + 
+			 " with " + c_fn + " " + c_ln + " to complete a Financial " +
+			 "Assessment and Medicaid Screening."
+	$tag("<CENTER>") $text(string,"desc2b") $tag("</CENTER>") $br(2)
+
+	{"l_snapLibSC"}sn_CreateReport(RptTitle,,,ReportID, client_id,2,$operstaffid)
+'	%include c_pbutton	
+	$sendform("Demo")
+
+	if $endbutton = "SUBMIT" then
+		gosub frm_ExitWarn
+		goto MAIN
+	elseif $endbutton = "CANCEL" then
+		gosub frm_ExitWarn
+		goto MAIN
+	else
+	' Check whether a new document register was just created. 
+		snapID = snap_handle:sn_GetSnapID() 
+		if snapID dp then 
+	' A snapshot was taken and successfully saved. Next we should save the entered data. 
+	      T = client_id + "|" + report_type + "|SNAP|" + snapID
+         log:l(T)
+			rtrncode = 0
+		    rc = snap_handle:sn_viewLatest(ReportID,,client_id,2,$ScriptID)
+			return
+		else 
+	' Display Snapshot Error form with Retry button and Cancel button. 
+         T = client_id + "|" + report_type + "|SNAPFAIL"
+         log:l(T)
+			select snap_handle:sn_failScreen(reportID,,,,,"RC") 
+				case "R" 
+				case "C"    draft_handle:dr_cancel(title,CID) 
+			endselect 
+			rtrncode = 1
+	' Since nextDo is still "REPORT1", we'll re-display the report form. 
+		endif 
+	endif
+return
+
+'++++++++++++++ Read data form form 2 subroutine +++++++++++++++++++++++++++++++
+READREC:
+	rc = $dbread(2, client_id, c.ln, c.fn, c.mn, c.suffix, c.ssn, c.sex, c.race,
+				 c.mar, c.empl, c.maiden, c.bd, c.age.y, c.clt.nm.notes)
+	if rc > 1 then
+			$brmsg("There was an error in reading client record.", 1, "C")
+			string = "script:" + $scriptid + " Line:" + $sourceline +
+					 "rc:" + $format(rc, "ZZZ")
+			$brmsg(string, 2, "W", "ERROR")
+			return
+	endif
+
+	c_ln = c.ln
+	c_fn = c.fn
+	c_mn = c.mn
+	c_suffix = c.suffix
+	c_bd = c.bd
+	c_age_y = c.age.y
+	c_ssn = c.ssn
+	c_sex = c.sex
+	c_race = c.race
+	c_mar = c.mar
+	c_empl = c.empl
+	c_maiden = c.maiden
+	c_clt_nm_notes = c.clt.nm.notes
+
+	current_age = ($today - c.bd) / 365.25  ' compute age in years
+
+'Read aka
+	$clear(c_aka_uid[], c_aka_lname[], c_aka_fname[], c_aka_mname[],
+		   c_aka_suffix[])
+	rc = $dbread(2, client_id, c.aka.rec, c.aka.lname, c.aka.fname,
+							   c.aka.mname, c.aka.suffix)
+
+	rec_counter = 1
+	do while rc < 2
+		c_aka_uid[rec_counter] = c.aka.rec[uid]
+		c_aka_lname[rec_counter] = c.aka.lname
+		c_aka_fname[rec_counter] = c.aka.fname
+		c_aka_mname[rec_counter] = c.aka.mname
+		c_aka_suffix[rec_counter] = c.aka.suffix
+	    rec_counter++
+		rc = $dbreadnextdst(02, client_id, c.aka.rec, c.aka.lname, c.aka.fname,
+								c.aka.mname, c.aka.suffix)
+	enddo
+
+	rc = $sort(c_aka_lname[], c_aka_fname[], c_aka_mname[], c_aka_suffix[],
+			   c_aka_uid[])
+
+		   
+'read physical address
+	rc = $dbread(2, client_id, c.ad.rec,c.addr1,c.addr2,c.city,c.state,c.zip,
+					c.tel,c.county,c.areacode,c.acodeoth,c.telother,c.acodewk,
+					c.telwork,c.city.desc,c.county.desc)
+
+'Read mailing address
+	rc = $dbread(2, client_id, c.ml.rec,c.ml.addr1,c.ml.addr2,c.ml.city,
+					c.ml.state,c.ml.zip,c.ml.city.desc)
+
+'Read Guardian and contact info
+		   
+	rc = $dbread(2, client_id, c.cc.rec,c.cc.prel,c.cc.name,c.cc.teleh,
+					c.cc.telew,c.cc.emnm,c.cc.emhph,c.cc.emwph,c.cc.emrel,
+					c.mr.guard)
+
+'Read eligibility records
+	$clear(c_el_uid[],c_el_effd[],c_el_prty[],c_el_ef_dt[],c_el_la_dt[],
+		   c_el_id_1[],c_el_id_2[],c_el_ver[],c_el_fs[],c_el_e_lia[],
+		   c_el_h_lia[],c_el_d_lia[],c_seqnumb[],c_eg_insln[],c_eg_insfn[],
+		   c_eg_insmi[],c_eg_insa1[],c_eg_insa2[],c_eg_inscy[],c_eg_insst[],
+		   c_eg_inszp[],c_eg_insph[],c_eg_insrc[],c_eg_insbd[],c_eg_inssx[],
+		   c_eg_insem[],c_eg_inac[],c_el_clsub[],c_el_dduct[],c_el_coins[],
+		   c_patidcdq[],c_eg_sid[],c_el_pb[],c_el_stf1[],c_el_tcmi[],
+		   $$el_cont[],$$el_cp%[],$$el_cp$[],c_el_current[],sub_suff[])
+
+	rc = $dbread(2, client_id, c.el,c.el.prty,c.el.ef.dt,c.el.la.dt,c.el.id.1,
+				 c.el.id.2,c.el.ver,c.el.fs,c.el.e.lia,c.el.h.lia,c.el.d.lia,
+				 c.seqnumb,c.eg.insln,c.eg.insfn,c.eg.insmi,c.eg.insa1,
+				 c.eg.insa2,c.eg.inscy,c.eg.insst,c.eg.inszp,c.eg.insph,
+				 c.eg.insrc,c.eg.insbd,c.eg.inssx,c.eg.insem,c.eg.inac,
+				 c.el.clsub,c.el.dduct,c.el.coins,c.patidcdq,c.eg.sid,
+				 c.el.pb,c.el.stf1,c.el.tcmi,$$el.cont,$$el.cp%,$$el.cp$,
+				 sub.suff)
+
+	rec_counter = 1
+	do while rc < 2
+		c_el_uid[rec_counter] = c.el[uid]
+		c_el_effd[rec_counter] = c.el[effd]
+		c_el_prty[rec_counter] = c.el.prty
+		c_el_ef_dt[rec_counter] = c.el.ef.dt
+		c_el_la_dt[rec_counter] = c.el.la.dt
+		c_el_id_1[rec_counter] = c.el.id.1
+		c_el_id_2[rec_counter] = c.el.id.2
+		c_el_ver[rec_counter] = c.el.ver
+		c_el_fs[rec_counter] = c.el.fs
+		c_el_e_lia[rec_counter] = c.el.e.lia
+		c_el_h_lia[rec_counter] = c.el.h.lia
+		c_el_d_lia[rec_counter]  = c.el.d.lia
+		c_seqnumb[rec_counter]  = c.seqnumb
+		c_eg_insln[rec_counter] = c.eg.insln
+		c_eg_insfn[rec_counter] = c.eg.insfn
+		c_eg_insmi[rec_counter] = c.eg.insmi
+		c_eg_insa1[rec_counter]  = c.eg.insa1
+		c_eg_insa2[rec_counter] = c.eg.insa2
+		c_eg_inscy[rec_counter] = c.eg.inscy
+		c_eg_insst[rec_counter] = c.eg.insst
+		c_eg_inszp[rec_counter] = c.eg.inszp
+		c_eg_insph[rec_counter]  = c.eg.insph
+		c_eg_insrc[rec_counter]  = c.eg.insrc
+		c_eg_insbd[rec_counter] = c.eg.insbd
+		c_eg_inssx[rec_counter] = c.eg.inssx
+		c_eg_insem[rec_counter] = c.eg.insem
+		sub_suff[rec_counter] = sub.suff
+		c_eg_inac[rec_counter] = c.eg.inac
+		c_el_clsub[rec_counter] = c.el.clsub
+		c_el_dduct[rec_counter] = c.el.dduct
+		c_el_coins[rec_counter] = c.el.coins
+		c_patidcdq[rec_counter] = c.patidcdq
+		c_eg_sid[rec_counter] = c.eg.sid
+		c_el_pb[rec_counter] = c.el.pb
+		c_el_stf1[rec_counter] = c.el.stf1
+		c_el_tcmi[rec_counter] = c.el.tcmi
+		$$el_cont[rec_counter] = $$el.cont
+		$$el_cp%[rec_counter]  = $$el.cp%
+		$$el_cp$[rec_counter] = $$el.cp$
+		if c.el.la.dt !dp or c.el.la.dt > $today then
+			c_el_current[rec_counter] = "Y"
+		else
+			c_el_current[rec_counter] = "N"
+		endif
+	    rec_counter++
+		rc = $dbreadnextdst(02, client_id, c.el,c.el.prty,c.el.ef.dt,c.el.la.dt,
+				c.el.id.1,c.el.id.2,c.el.ver,c.el.fs,c.el.e.lia,c.el.h.lia,
+				c.el.d.lia,c.seqnumb,c.eg.insln,c.eg.insfn,c.eg.insmi,
+				c.eg.insa1,c.eg.insa2,c.eg.inscy,c.eg.insst,c.eg.inszp,
+				c.eg.insph,c.eg.insrc,c.eg.insbd,c.eg.inssx,c.eg.insem,
+				c.eg.inac,c.el.clsub,c.el.dduct,c.el.coins,c.patidcdq,c.eg.sid,
+				c.el.pb,c.el.stf1,c.el.tcmi,$$el.cont,$$el.cp%,$$el.cp$,
+				sub.suff)
+	enddo
+
+	rc = $sort(c_el_current[], "D", c_el_fs[],c_el_ef_dt[],c_el_la_dt[],
+			   $$el_cont[],c_el_id_1[],c_el_id_2[],c_el_ver[],c_el_e_lia[],
+			   c_el_effd[],c_el_prty[],c_el_h_lia[],c_el_d_lia[],c_seqnumb[],
+			   c_eg_insln[],c_eg_insfn[],c_eg_insmi[],c_eg_insa1[],c_eg_insa2[],
+			   c_eg_inscy[],c_eg_insst[],c_eg_inszp[],c_eg_insph[],c_eg_insrc[],
+			   c_eg_insbd[],c_eg_inssx[],c_eg_insem[],c_eg_inac[],c_el_clsub[],
+			   c_el_dduct[],c_el_coins[],c_patidcdq[],c_eg_sid[],c_el_pb[],
+			   c_el_stf1[],c_el_tcmi[],$$el_cp%[],$$el_cp$[],sub_suff[],
+			   c_el_uid[])
+
+'Read Financial Verification
+	$clear(c_fver_ruid[], c_fver_uid[], c_fver_effd[], c_fver_vdate[],
+			c_fver_edate[], c_fver_staff[])
+
+	rc = $dbread(2, client_id, c.fver.rec, c.fver.uid, c.fver.vdate,
+					c.fver.edate, c.fver.staff)
+
+	rec_counter = 1
+	do while rc < 2
+		c_fver_ruid[rec_counter] = c.fver.rec[uid]
+		c_fver_effd[rec_counter] = c.fver.rec[effd]
+		c_fver_uid[rec_counter] = c.fver.uid
+		c_fver_vdate[rec_counter] = c.fver.vdate
+		c_fver_edate[rec_counter] = c.fver.edate
+		c_fver_staff[rec_counter] = c.fver.staff
+	    rec_counter++
+		rc = $dbreadnextdst(02, client_id, c.fver.rec, c.fver.uid, c.fver.vdate,
+								c.fver.edate, c.fver.staff)
+	enddo
+
+	rc = $sort(c_fver_uid[], c_fver_vdate[], "D", c_fver_effd[], c_fver_edate[],
+				c_fver_staff[], c_fver_ruid[])
+
+'Read responsible Party
+	rc = $dbread(2, client_id, c.rp, c.rp.addr1, c.rp.addr2, c.rp.city,
+				 c.rp.st, c.rp.zip, c.rp.fn, c.rp.ln, c.rp.mn, c.rp.rel,
+				 c.rpetq)
+
+'Read household record
+	$clear(c_hh_uid[],c_hh_effd[],c_hh_name[],c_hh_id[],c_hh_relship[],
+			c_hh_age[],c_hh_current[], c_hh_staff[], c_hh_client[],
+			c_hh_cid[])
+
+	rc = $dbread(2, client_id, c.hh.rec, c.hh.name, c.hh.id, c.hh.relship,
+					c.hh.age, c.hh.current, c.hh.staff, c.hh.client, c.hh.cid)
+
+	rec_counter = 1
+	do while rc < 2
+		c_hh_uid[rec_counter] = c.hh.rec[uid]
+		c_hh_effd[rec_counter] = c.hh.rec[effd]
+		c_hh_name[rec_counter] = c.hh.name
+		c_hh_id[rec_counter] = c.hh.id
+		c_hh_relship[rec_counter] = c.hh.relship
+		c_hh_age[rec_counter] = c.hh.age
+		c_hh_current[rec_counter] = c.hh.current
+		c_hh_staff[rec_counter] = c.hh.staff
+		c_hh_client[rec_counter] = c.hh.client
+		c_hh_cid[rec_counter] = c.hh.cid
+	    rec_counter++
+		rc = $dbreadnextdst(02, client_id, c.hh.rec, c.hh.name, c.hh.id,
+							c.hh.relship, c.hh.age, c.hh.current, c.hh.staff,
+							c.hh.client, c.hh.cid)
+	enddo
+
+
+	rc = $sort(c_hh_id[], c_hh_current[], c_hh_name[], c_hh_id[], c_hh_uid[],
+				c_hh_effd[], c_hh_relship[], c_hh_age[], c_hh_staff[],
+				c_hh_client[], c_hh_cid[])
+
+'Read household record 
+	$clear(c_inc_uid[],c_inc_effd[],c_inc_id[],c_inc_type[],c_inc_amnt[],
+			c_inc_date[],c_inc_staff[], c_inc_current[])
+
+	rc = $dbread(2, client_id, c.inc.rec, c.inc.id, c.inc.type, c.inc.amnt,
+					c.inc.date, c.inc.staff, c.inc.current)
+
+	rec_counter = 1
+	do while rc < 2
+		c_inc_uid[rec_counter] = c.inc.rec[uid]
+		c_inc_effd[rec_counter] = c.inc.rec[effd]
+		c_inc_id[rec_counter] = c.inc.id
+		c_inc_type[rec_counter] = c.inc.type
+		c_inc_amnt[rec_counter] = c.inc.amnt
+		c_inc_date[rec_counter] = c.inc.date
+		c_inc_staff[rec_counter] = c.inc.staff
+		c_inc_current[rec_counter] = c.inc.current
+	    rec_counter++
+		rc = $dbreadnextdst(02, client_id, c.inc.rec, c.inc.id, c.inc.type,
+							c.inc.amnt, c.inc.date, c.inc.staff, c.inc.current)
+	enddo
+
+	rc = $sort(c_inc_id[], c_inc_type[], c_inc_amnt[], c_inc_date[],
+			   c_inc_staff[], c_inc_uid[], c_inc_effd[], c_inc_current[])
+
+'Read housing record 
+ 	$clear(c_hou_effd, c_hou_livarr, c_hou_livarro,
+			c_hou_where, c_hou_whereo, c_hou_sec8, c_hou_sec8w,
+			c_hou_edate, c_hou_staff)
+
+	rc = $dbread(2, client_id, c.hou.rec, c.hou.livarr, c.hou.livarro,
+					c.hou.where, c.hou.whereo, c.hou.sec8, c.hou.sec8w,
+					c.hou.edate, c.hou.staff)
+
+	c_hou_effd = c.hou.rec[effd]
+	c_hou_livarr = c.hou.livarr
+	c_hou_livarro = c.hou.livarro
+	c_hou_where = c.hou.where
+	c_hou_whereo = c.hou.whereo
+	c_hou_sec8 = c.hou.sec8
+	c_hou_sec8w = c.hou.sec8w
+	c_hou_edate = c.hou.edate
+	c_hou_staff = c.hou.staff
+
+'Read extra exp record 
+	$clear(c_exe_uid[],c_exe_effd[],c_exe_type[],c_exe_sdate[],c_exe_edate[],
+		   c_exe_amount[],c_exe_docdt[],c_exe_other[],c_exe_current[],
+		   c_exe_staff[])
+		   
+	rc = $dbread(2, client_id, c.exe.rec,c.exe.type,c.exe.sdate,c.exe.edate,
+					c.exe.amount,c.exe.docdt,c.exe.other,c.exe.current,
+					c.exe.staff)
+
+	rec_counter = 1
+	do while rc < 2
+		c_exe_uid[rec_counter] = c.exe.rec[uid]
+		c_exe_effd[rec_counter] = c.exe.rec[effd]
+		c_exe_type[rec_counter] = c.exe.type
+		c_exe_sdate[rec_counter] = c.exe.sdate
+		c_exe_edate[rec_counter] = c.exe.edate
+		c_exe_amount[rec_counter] = c.exe.amount
+		c_exe_docdt[rec_counter] = c.exe.docdt
+		c_exe_other[rec_counter] = c.exe.other
+		c_exe_current[rec_counter] = c.exe.current
+		c_exe_staff[rec_counter] = c.exe.staff
+	    rec_counter++
+		rc = $dbreadnextdst(02, client_id, c.exe.rec, c.exe.type, c.exe.sdate,
+							c.exe.edate, c.exe.amount, c.exe.docdt,
+							c.exe.other, c.exe.current, c.exe.staff)
+	enddo
+	rc = $sort(c_exe_current[],"D", c_exe_type[],c_exe_sdate[],c_exe_edate[],
+		   		c_exe_amount[],c_exe_docdt[],c_exe_other[],
+		   		c_exe_staff[],c_exe_effd[],c_exe_uid[])
+
+'Read MMF info
+	rc = $dbread(02, client_id, $$pp.rec, pp.staff, $$pp.eff, $$pp.lap,
+				   	pp.tmnuinc, pp.tmnginc, pp.tmi, pp.tmnexin, pp.tadginc,
+				   	pp.ovrrsn, pp.100std, pp.100why, pp.100svcs,
+				   $$pp.d.lia, pp.mmftot, pp.chipref, pp.ssdimdf)
+goback
+
+
+'Warn the user that they are about to exit without saving a snap
+frm_ExitWarn:
+
+   T = client_id + "|" + report_type + "|WARN"
+   log:l(T)
+   $submitopt("on","Return")
+   $cancelopt("on","Exit")
+   $form()
+   $text("{center}")
+   $text($mscname,"h1")
+   $br()
+   $text("Cancel Financial Snapshot","h2")
+   $br(3)
+   
+   T = "Warning:  You are about to cancel out of creating a snapshot for the "
+   + "Financial Intake or Update"
+   $style2("error","P")
+   $text(T)
+   
+   $ctag("<BR><BR>")
+   $text("A snapshot should always be created for documentation purposes.")
+   $ctag("<BR><BR>")
+
+   T = "If you have forgotten your eCET PIN code, please open a HelpDesk ticket "
+   + "and your PIN will be reset ASAP."
+   + "  Once reset be sure to save this snapshot."
+   
+   $text(T)
+   
+   $style2("normal","P")
+   $sendform()
+
+   T = client_id + "|" + report_type + "|WARNSUBMIT|" + $endbutton
+   log:l(T)
+   
+   if $endbutton = "CANCEL" then return endif
+goback
+
+end FINRPT

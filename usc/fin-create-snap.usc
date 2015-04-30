@@ -1,0 +1,76 @@
+start fin-create-snap(parmfile, option, client, retcode)
+
+parmfile          is x
+option            is x
+client            is x
+retcode           is b
+
+fin_script        is x
+staffaccess[]     is x
+dateaccess[]      is x
+clientaccess[]    is x
+
+msg_no_stf_auth   is x
+msg_no_date_auth  is x
+msg_no_clt_auth   is x
+
+clientpick_lib    is x
+
+idx               is b
+err-msg           is x
+
+fin_script = "FINRPT"
+msg_no_stf_auth = "You are not authorized to create a financial snapshot"
+msg_no_date_auth = "You are not authorized to create a financial snapshot today"
+msg_no_clt_auth = "You are not authorized to create a financial shopshot for %CLIENT%"
+
+clientpick_lib = "lib_CLIENT"
+
+getparm(parmfile)
+getoption(option)
+
+
+$clear(err-msg)
+idx = 0
+idx = $find($operstaffid, staffaccess[], 1, "F")
+
+if client !dp then
+   if clientpick_lib:pickClient(client) > 0 then
+      return
+   endif
+endif
+
+if idx = 0 then
+   err-msg = msg_no_stf_auth + "{br}"
+endif
+
+if $today != dateaccess[idx] then
+   err-msg += $replace("%DATE%", dateaccess[idx], msg_no_date_auth) + "{br}"
+endif
+
+if client != clientaccess[idx] then
+   err-msg += $replace("%CLIENT%", client, msg_no_clt_auth) + "{br}"
+endif
+
+if err-msg dp then 
+   $submitopt("off", "")
+   $cancelopt("off", "Exit")
+   $form("main")
+   $text("{center}")
+   $text("{h1}Finanacial Assessment - Create Snapshot{/h1}")
+   $text(err-msg)
+   $sendform("main")
+
+   select $endbutton
+      case "SUBMIT"
+        or "CANCEL"  return
+      case other     return
+   endselect
+endif
+
+CALL fin_script (client, "C", retcode)
+
+end fin-create-snap
+
+%include inc_GetParm
+%include inc_GetOption
